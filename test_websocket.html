@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket 测试</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>WebSocket 测试页面</h1>
+    <div id="status">连接中...</div>
+    <div id="decisions"></div>
+    
+    <script>
+        const socket = io('http://localhost:5000');
+        
+        socket.on('connect', function() {
+            document.getElementById('status').innerHTML = '<span style="color: green;">已连接</span>';
+            console.log('Connected');
+        });
+        
+        socket.on('agent_decision', function(data) {
+            console.log('Received decision:', data);
+            const div = document.createElement('div');
+            div.innerHTML = '<hr><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            document.getElementById('decisions').appendChild(div);
+        });
+        
+        socket.on('simulation_update', function(data) {
+            console.log('Simulation update:', data);
+        });
+        
+        // 测试获取决策
+        function testDecision() {
+            socket.emit('get_agent_decision', { agent_id: 'vehicle_1' });
+        }
+    </script>
+    
+    <button onclick="testDecision()">测试获取决策 (vehicle_1)</button>
+</body>
+</html>

@@ -1,0 +1,21 @@
+[初始车辆] vehicle_2: node_1_1 -> node_0_1, 路线节点: 2
+[初始车辆] vehicle_3: node_2_2 -> node_1_0, 路线节点: 4
+[初始车辆] vehicle_4: node_1_2 -> node_0_2, 路线节点: 2
+[初始车辆] vehicle_5: node_1_2 -> node_0_1, 路线节点: 3
+仿真环境已初始化
+ * Serving Flask app 'app'
+ * Debug mode: on
+[初始车辆] vehicle_2: node_1_2 -> node_0_2, 路线节点: 2
+[初始车辆] vehicle_3: node_0_1 -> node_2_2, 路线节点: 4
+[初始车辆] vehicle_4: node_0_1 -> node_1_1, 路线节点: 2
+[初始车辆] vehicle_5: node_0_1 -> node_1_2, 路线节点: 3
+仿真环境已初始化
+客户端已连接
+[初始车辆] vehicle_2: node_0_1 -> node_0_0, 路线节点: 2
+[初始车辆] vehicle_3: node_2_0 -> node_1_0, 路线节点: 2
+[初始车辆] vehicle_4: node_2_2 -> node_1_2, 路线节点: 2
+[初始车辆] vehicle_5: node_1_0 -> node_0_2, 路线节点: 4
+仿真环境已初始化
+客户端已连接
+仿真循环错误: 'Vehicle' object has no attribute 'llm_interface'
+[生成车辆] vehicle_6: node_1_1 -> node_0_0, 路线节点: 3

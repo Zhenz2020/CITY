@@ -1,0 +1,22 @@
+# 综合交通仿真系统依赖
+
+# 基础依赖
+numpy>=1.24.0
+pandas>=2.0.0
+
+# 可视化
+matplotlib>=3.7.0
+
+# 大语言模型
+openai>=1.0.0
+
+# 强化学习（可选）
+# gymnasium>=0.28.0
+# stable-baselines3>=2.0.0
+
+# 开发依赖
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0

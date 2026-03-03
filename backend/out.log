@@ -1,0 +1,8 @@
+[LLM] 已加载配置: D:\项目\CITY\config\siliconflow_config.json
+[初始车辆] vehicle_2: node_2_1 -> node_1_1 (LLM=启用)
+[初始车辆] vehicle_3: node_2_0 -> node_1_1 (LLM=启用)
+[初始车辆] vehicle_4: node_2_1 -> node_1_2 (LLM=启用)
+[初始车辆] vehicle_5: node_1_1 -> node_2_2 (LLM=启用)
+仿真环境已初始化
+ * Serving Flask app 'app'
+ * Debug mode: off

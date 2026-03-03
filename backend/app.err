@@ -1,0 +1,416 @@
+Werkzeug appears to be used in a production deployment. Consider switching to a production web server instead.
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.7:5000
+Press CTRL+C to quit
+ * Restarting with watchdog (windowsapi)
+Werkzeug appears to be used in a production deployment. Consider switching to a production web server instead.
+ * Debugger is active!
+ * Debugger PIN: 760-669-973
+127.0.0.1 - - [01/Mar/2026 15:29:31] "GET /socket.io/?EIO=4&transport=polling&t=fj50w24h HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:29:32] "POST /socket.io/?EIO=4&transport=polling&t=fj58ra0u&sid=WqXRBpZeD9fgo5PtAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:29:32] "GET /socket.io/?EIO=4&transport=polling&t=fj58tzo2&sid=WqXRBpZeD9fgo5PtAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:29:32] "GET /socket.io/?EIO=4&transport=polling&t=fj5hrcr5&sid=WqXRBpZeD9fgo5PtAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:29:32] "POST /socket.io/?EIO=4&transport=polling&t=fj5j51x7&sid=WqXRBpZeD9fgo5PtAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:29:32] "GET /socket.io/?EIO=4&transport=polling&t=fj5jjhpr&sid=WqXRBpZeD9fgo5PtAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:29:32] "GET /socket.io/?EIO=4&transport=polling&t=fj5ketk8&sid=WqXRBpZeD9fgo5PtAAAA HTTP/1.1" 200 -
+ * Detected change in 'D:\\项目\\CITY\\test_vehicle_optimization.py', reloading
+ * Detected change in 'D:\\项目\\CITY\\test_vehicle_optimization.py', reloading
+ * Restarting with watchdog (windowsapi)
+Werkzeug appears to be used in a production deployment. Consider switching to a production web server instead.
+ * Debugger is active!
+ * Debugger PIN: 760-669-973
+127.0.0.1 - - [01/Mar/2026 15:31:12] "GET /socket.io/?EIO=4&transport=polling&t=fla5jwaa HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:12] "POST /socket.io/?EIO=4&transport=polling&t=fla9mg9u&sid=C-wrTPGG2f_nC88BAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:12] "GET /socket.io/?EIO=4&transport=polling&t=fla9n6rj&sid=C-wrTPGG2f_nC88BAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:12] "POST /socket.io/?EIO=4&transport=polling&t=flaaiwxr&sid=C-wrTPGG2f_nC88BAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:12] "GET /socket.io/?EIO=4&transport=polling&t=fla9szni&sid=C-wrTPGG2f_nC88BAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:12] "GET /socket.io/?EIO=4&transport=polling&t=flaay8u7&sid=C-wrTPGG2f_nC88BAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:17] "POST /api/control HTTP/1.1" 200 -
+Exception in thread Thread-25 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+ * Detected change in 'D:\\Anaconda\\Lib\\threading.py', reloading
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+ * Detected change in 'D:\\Anaconda\\Lib\\site-packages\\socketio\\server.py', reloading
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+ * Restarting with watchdog (windowsapi)
+Werkzeug appears to be used in a production deployment. Consider switching to a production web server instead.
+ * Debugger is active!
+ * Debugger PIN: 760-669-973
+127.0.0.1 - - [01/Mar/2026 15:31:23] "GET /socket.io/?EIO=4&transport=polling&t=fliwhuzt HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:23] "POST /socket.io/?EIO=4&transport=polling&t=fliwmq39&sid=yo0H1wP1XREdIG4qAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:23] "GET /socket.io/?EIO=4&transport=polling&t=fliwnkh2&sid=yo0H1wP1XREdIG4qAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:23] "POST /socket.io/?EIO=4&transport=polling&t=flix7o3l&sid=yo0H1wP1XREdIG4qAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:23] "GET /socket.io/?EIO=4&transport=polling&t=fliwsvfj&sid=yo0H1wP1XREdIG4qAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:23] "GET /socket.io/?EIO=4&transport=polling&t=flixf367&sid=yo0H1wP1XREdIG4qAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:24] "POST /api/control HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:31:31] "GET /socket.io/?EIO=4&transport=websocket&sid=yo0H1wP1XREdIG4qAAAA HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:36:45] "GET /socket.io/?EIO=4&transport=polling&t=fsfv8auc HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:36:45] "POST /socket.io/?EIO=4&transport=polling&t=fsfxa8q8&sid=lRdew1LvQmhF5pjNAAAC HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:36:45] "GET /socket.io/?EIO=4&transport=polling&t=fsfxbqnp&sid=lRdew1LvQmhF5pjNAAAC HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:36:46] "POST /socket.io/?EIO=4&transport=polling&t=fsg2jyr6&sid=lRdew1LvQmhF5pjNAAAC HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:36:46] "GET /socket.io/?EIO=4&transport=polling&t=fsg1ari7&sid=lRdew1LvQmhF5pjNAAAC HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:36:46] "GET /socket.io/?EIO=4&transport=polling&t=fsg3a9p7&sid=lRdew1LvQmhF5pjNAAAC HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:10] "POST /api/control HTTP/1.1" 200 -
+Exception in thread Thread-44 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-45 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-46 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-47 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-48 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-49 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-50 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+127.0.0.1 - - [01/Mar/2026 15:37:27] "POST /api/control HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:28] "POST /api/control HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:32] "POST /api/control HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:44] "POST /api/control HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:48] "GET /socket.io/?EIO=4&transport=websocket&sid=lRdew1LvQmhF5pjNAAAC HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:54] "GET /socket.io/?EIO=4&transport=polling&t=ftwewqw7 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:54] "POST /socket.io/?EIO=4&transport=polling&t=ftwg4xuo&sid=L6Kf6XNWWXrFHA0AAAAE HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:54] "GET /socket.io/?EIO=4&transport=polling&t=ftwg571t&sid=L6Kf6XNWWXrFHA0AAAAE HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:54] "POST /socket.io/?EIO=4&transport=polling&t=ftwh158k&sid=L6Kf6XNWWXrFHA0AAAAE HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:54] "GET /socket.io/?EIO=4&transport=polling&t=ftwgn766&sid=L6Kf6XNWWXrFHA0AAAAE HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:37:54] "GET /socket.io/?EIO=4&transport=polling&t=ftwho892&sid=L6Kf6XNWWXrFHA0AAAAE HTTP/1.1" 200 -
+Exception in thread Thread-73 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-74 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-75 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-76 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-77 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-78 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+Exception in thread Thread-79 (_handle_event_internal):
+Traceback (most recent call last):
+  File "D:\Anaconda\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "D:\Anaconda\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 595, in _handle_event_internal
+    r = server._trigger_event(data[0], namespace, sid, *data[1:])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\socketio\server.py", line 621, in _trigger_event
+    return handler(*args)
+           ^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 306, in _handler
+    return self._handle_event(handler, message, real_ns, sid,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 858, in _handle_event
+    ret = handler(*args)
+          ^^^^^^^^^^^^^^
+  File "D:\项目\CITY\backend\app.py", line 516, in handle_spawn_vehicle
+    socketio.emit("vehicle_spawned", {
+  File "D:\Anaconda\Lib\site-packages\flask_socketio\__init__.py", line 486, in emit
+    self.server.emit(event, *args, namespace=namespace, to=to,
+TypeError: Server.emit() got an unexpected keyword argument 'broadcast'
+127.0.0.1 - - [01/Mar/2026 15:37:58] "POST /api/control HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:38:23] "GET /socket.io/?EIO=4&transport=websocket&sid=L6Kf6XNWWXrFHA0AAAAE HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:38:23] "GET /socket.io/?EIO=4&transport=polling&t=fuj82v4u HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:38:23] "POST /socket.io/?EIO=4&transport=polling&t=fuj8vr46&sid=M995tz6MU9JvDn4oAAAG HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:38:23] "GET /socket.io/?EIO=4&transport=polling&t=fuj8vskg&sid=M995tz6MU9JvDn4oAAAG HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:38:23] "POST /socket.io/?EIO=4&transport=polling&t=fuj9km1q&sid=M995tz6MU9JvDn4oAAAG HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:38:23] "GET /socket.io/?EIO=4&transport=polling&t=fuj9az6d&sid=M995tz6MU9JvDn4oAAAG HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:38:23] "GET /socket.io/?EIO=4&transport=polling&t=fuja4fgw&sid=M995tz6MU9JvDn4oAAAG HTTP/1.1" 200 -
+127.0.0.1 - - [01/Mar/2026 15:38:25] "GET /socket.io/?EIO=4&transport=websocket&sid=M995tz6MU9JvDn4oAAAG HTTP/1.1" 200 -
