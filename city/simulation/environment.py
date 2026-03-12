@@ -67,6 +67,10 @@ class SimulationEnvironment:
         self.pedestrians: dict[str, Pedestrian] = {}
         self.traffic_managers: dict[str, TrafficManager] = {}
         self.traffic_planners: dict[str, TrafficPlanner] = {}
+        self.planning_agents: dict[str, Any] = {}  # 路网规划智能体
+        
+        # 动态路网历史
+        self.expansion_history: list[dict[str, Any]] = []
 
         # 仿真状态
         self.current_time = 0.0
@@ -107,6 +111,9 @@ class SimulationEnvironment:
             self.traffic_managers[agent.agent_id] = agent
         elif isinstance(agent, TrafficPlanner):
             self.traffic_planners[agent.agent_id] = agent
+        # 动态导入以避免循环依赖
+        elif agent.__class__.__name__ == 'PlanningAgent':
+            self.planning_agents[agent.agent_id] = agent
 
     def remove_agent(self, agent_id: str) -> bool:
         """从环境中移除智能体。"""
@@ -126,6 +133,9 @@ class SimulationEnvironment:
             del self.traffic_managers[agent_id]
         elif isinstance(agent, TrafficPlanner):
             del self.traffic_planners[agent_id]
+        elif agent.__class__.__name__ == 'PlanningAgent':
+            if agent_id in self.planning_agents:
+                del self.planning_agents[agent_id]
 
         del self.agents[agent_id]
         return True
@@ -163,6 +173,7 @@ class SimulationEnvironment:
             vehicle.set_route(route)
         else:
             if not vehicle.plan_route(start_node, end_node):
+                print(f"[spawn_vehicle] 路线规划失败: {start_node.node_id} -> {end_node.node_id}")
                 return None
 
         # 在第一条路段上生成
@@ -181,7 +192,10 @@ class SimulationEnvironment:
                     'start': start_node.node_id,
                     'end': end_node.node_id
                 })
+                print(f"[spawn_vehicle] 成功生成车辆 {vehicle.agent_id}")
                 return vehicle
+            else:
+                print(f"[spawn_vehicle] 找不到起始路段: {start_node.node_id} -> {vehicle.route[1].node_id}")
 
         return None
 
@@ -320,6 +334,10 @@ class SimulationEnvironment:
         self.pedestrians.clear()
         self.traffic_managers.clear()
         self.traffic_planners.clear()
+        self.planning_agents.clear()
+        
+        # 清空扩展历史
+        self.expansion_history.clear()
 
         # 重置统计
         self.statistics = {
@@ -367,4 +385,147 @@ class SimulationEnvironment:
             'num_agents': len(self.agents),
             'num_vehicles': len(self.vehicles),
             'num_pedestrians': len(self.pedestrians)
+        }
+
+
+    # ========== 动态路网扩展方法 ==========
+    
+    def add_node_dynamically(self, position: Vector2D, name: str | None = None) -> Node:
+        """
+        动态添加新节点到路网。
+        
+        Args:
+            position: 节点位置
+            name: 节点名称
+            
+        Returns:
+            新创建的节点
+        """
+        node = Node(position=position, name=name)
+        self.road_network.add_node(node)
+        
+        # 记录扩展历史
+        self.expansion_history.append({
+            'time': self.current_time,
+            'type': 'add_node',
+            'node_id': node.node_id,
+            'position': {'x': position.x, 'y': position.y},
+            'name': name
+        })
+        
+        self._log_event('network_expansion', {
+            'action': 'add_node',
+            'node_id': node.node_id,
+            'position': {'x': position.x, 'y': position.y}
+        })
+        
+        return node
+    
+    def add_edge_dynamically(
+        self, 
+        from_node: Node, 
+        to_node: Node, 
+        num_lanes: int = 2,
+        bidirectional: bool = True
+    ) -> Edge | tuple[Edge, Edge] | None:
+        """
+        动态添加新路段到路网。
+        
+        Args:
+            from_node: 起始节点
+            to_node: 目标节点
+            num_lanes: 车道数
+            bidirectional: 是否双向
+            
+        Returns:
+            新创建的边（单向）或边元组（双向），失败返回None
+        """
+        result = self.road_network.create_edge(
+            from_node=from_node,
+            to_node=to_node,
+            num_lanes=num_lanes,
+            bidirectional=bidirectional
+        )
+        
+        # create_edge 双向时返回元组，单向时返回单个Edge
+        if bidirectional and isinstance(result, tuple):
+            edge = result[0]  # 使用正向边记录历史
+        else:
+            edge = result
+        
+        # 记录扩展历史
+        self.expansion_history.append({
+            'time': self.current_time,
+            'type': 'add_edge',
+            'edge_id': edge.edge_id,
+            'from_node': from_node.node_id,
+            'to_node': to_node.node_id,
+            'num_lanes': num_lanes,
+            'length': edge.length
+        })
+        
+        self._log_event('network_expansion', {
+            'action': 'add_edge',
+            'edge_id': edge.edge_id,
+            'from_node': from_node.node_id,
+            'to_node': to_node.node_id,
+            'length': edge.length
+        })
+        
+        return edge
+    
+    def get_expansion_history(self) -> list[dict[str, Any]]:
+        """获取路网扩展历史。"""
+        return self.expansion_history.copy()
+    
+    def can_connect_nodes(self, node1: Node, node2: Node, max_distance: float = 500.0) -> bool:
+        """
+        检查是否可以在两个节点之间创建路段。
+        
+        Args:
+            node1: 第一个节点
+            node2: 第二个节点
+            max_distance: 最大允许距离
+            
+        Returns:
+            是否可以连接
+        """
+        # 检查是否已存在直接连接
+        for edge in self.road_network.edges.values():
+            if (edge.from_node == node1 and edge.to_node == node2) or \
+               (edge.from_node == node2 and edge.to_node == node1):
+                return False
+        
+        # 检查距离
+        distance = node1.position.distance_to(node2.position)
+        if distance > max_distance:
+            return False
+        
+        return True
+    
+    def get_network_density(self) -> dict[str, float]:
+        """
+        获取路网密度指标。
+        
+        Returns:
+            包含各种密度指标的字典
+        """
+        num_nodes = len(self.road_network.nodes)
+        num_edges = len(self.road_network.edges)
+        
+        if num_nodes == 0:
+            return {'edge_density': 0.0, 'connection_ratio': 0.0}
+        
+        # 边密度: 边数 / 节点数
+        edge_density = num_edges / num_nodes if num_nodes > 0 else 0.0
+        
+        # 连接率: 实际边数 / 最大可能边数
+        max_possible_edges = num_nodes * (num_nodes - 1) / 2
+        connection_ratio = num_edges / max_possible_edges if max_possible_edges > 0 else 0.0
+        
+        return {
+            'edge_density': edge_density,
+            'connection_ratio': connection_ratio,
+            'num_nodes': float(num_nodes),
+            'num_edges': float(num_edges)
         }

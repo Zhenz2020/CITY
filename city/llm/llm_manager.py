@@ -20,7 +20,7 @@ class LLMManager:
     管理多个智能体的 LLM 决策请求，支持并发处理。
     """
     
-    def __init__(self, max_workers: int = 5) -> None:
+    def __init__(self, max_workers: int = 10) -> None:
         """
         初始化 LLM 管理器。
         
@@ -111,6 +111,45 @@ class LLMManager:
                 if not future.done():
                     future.cancel()
     
+    def request_sync_decision(self, prompt: str, timeout: float = 10.0) -> str | None:
+        """
+        同步请求 LLM 决策（阻塞）。
+        
+        用于需要立即获得决策的场景，如路网规划智能体。
+        
+        Args:
+            prompt: 提示文本
+            timeout: 超时时间（秒）
+            
+        Returns:
+            LLM响应文本，失败返回 None
+        """
+        try:
+            from city.llm.llm_pool import get_llm_pool
+            
+            llm_pool = get_llm_pool()
+            if not llm_pool.is_available():
+                print("[LLMManager] No LLM client available")
+                return None
+            
+            # 获取一个客户端
+            client = llm_pool.get_client()
+            if not client:
+                print("[LLMManager] Failed to get LLM client")
+                return None
+            
+            # 使用线程池执行同步请求
+            future = self.executor.submit(client.chat, prompt)
+            result = future.result(timeout=timeout)
+            
+            if result:
+                return str(result)
+            return None
+            
+        except Exception as e:
+            print(f"[LLMManager] Sync decision failed: {e}")
+            return None
+
     def shutdown(self) -> None:
         """关闭管理器。"""
         self.executor.shutdown(wait=False)
@@ -124,7 +163,7 @@ def get_llm_manager() -> LLMManager:
     """获取全局 LLM 管理器实例。"""
     global _global_llm_manager
     if _global_llm_manager is None:
-        _global_llm_manager = LLMManager(max_workers=5)
+        _global_llm_manager = LLMManager(max_workers=10)
     return _global_llm_manager
 
 

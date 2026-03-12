@@ -112,7 +112,7 @@ class AgentLLMInterface:
 
         return prompts.get(agent_type, base_prompt)
 
-    def get_llm_decision(self, perception: dict[str, Any]) -> dict[str, Any]:
+    def get_llm_decision(self, perception: dict[str, Any] | None) -> dict[str, Any]:
         """
         获取LLM的决策建议 - 增强版。
         
@@ -122,6 +122,9 @@ class AgentLLMInterface:
         Returns:
             LLM的决策建议，包含推理链
         """
+        if not perception:
+            return self._fallback_decision({'self': {'velocity': 0}})
+        
         if not self.use_llm:
             return self._fallback_decision(perception)
 
@@ -163,9 +166,11 @@ class AgentLLMInterface:
         else:
             return f"当前状态: {json.dumps(perception, ensure_ascii=False, indent=2)}"
 
-    def _build_vehicle_enhanced_prompt(self, perception: dict[str, Any]) -> str:
+    def _build_vehicle_enhanced_prompt(self, perception: dict[str, Any] | None) -> str:
         """构建车辆增强版决策提示。"""
         vehicle = self.agent
+        if not perception:
+            return '{"action": "maintain", "reason": "无感知数据", "confidence": 0.5}'
         self_info = perception.get('self', {})
         route_info = perception.get('route', {})
         front_v = perception.get('front_vehicle')
@@ -296,9 +301,13 @@ class AgentLLMInterface:
         return prompt
 
     def _build_manager_prompt(self, perception: dict[str, Any]) -> str:
-        """构建交通管理者决策提示。"""
+        """构建交通管理者/红绿灯决策提示。"""
         manager = self.agent
-        prompt = f"""=== 交通管理决策请求 ===
+        
+        # 检查是 TrafficManager 还是 TrafficLightAgent
+        if hasattr(manager, 'control_area'):
+            # TrafficManager
+            prompt = f"""=== 交通管理决策请求 ===
 
 【管理状态】
 - 管理区域: {len(manager.control_area)} 个节点
@@ -308,10 +317,33 @@ class AgentLLMInterface:
 {json.dumps(perception, ensure_ascii=False, indent=2)}
 
 请提供管理决策。"""
+        elif hasattr(manager, 'control_node'):
+            # TrafficLightAgent
+            prompt = f"""=== 红绿灯控制决策请求 ===
+
+【路口状态】
+- 控制节点: {manager.control_node.name}
+- 当前相位: {perception.get('current_phase', 'UNKNOWN')}
+
+感知信息：
+{json.dumps(perception, ensure_ascii=False, indent=2)}
+
+请提供红绿灯配时决策（maintain/switch_phase/extend_current）。"""
+        else:
+            # 其他类型
+            prompt = f"""=== 交通管理决策请求 ===
+
+感知信息：
+{json.dumps(perception, ensure_ascii=False, indent=2)}
+
+请提供管理决策。"""
+        
         return prompt
 
-    def _summarize_perception(self, perception: dict) -> dict:
+    def _summarize_perception(self, perception: dict | None) -> dict:
         """简化感知信息用于历史记录。"""
+        if not perception:
+            return {'velocity': 0, 'has_front_vehicle': False, 'traffic_light': None, 'is_deadlocked': False}
         return {
             'velocity': perception.get('self', {}).get('velocity'),
             'has_front_vehicle': perception.get('front_vehicle') is not None,
@@ -353,9 +385,13 @@ class AgentLLMInterface:
             
         return {"action": "maintain", "reason": "解析失败，使用默认策略", "confidence": 0.5}
 
-    def _fallback_decision(self, perception: dict[str, Any]) -> dict[str, Any]:
+    def _fallback_decision(self, perception: dict[str, Any] | None) -> dict[str, Any]:
         """当LLM不可用时使用增强版默认决策。"""
         agent_type = self.agent.agent_type.name
+        
+        # 确保 perception 不为 None
+        if not perception:
+            perception = {}
         
         # 基于感知信息做简单的规则决策
         if agent_type == 'VEHICLE':

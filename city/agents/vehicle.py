@@ -178,7 +178,7 @@ class Vehicle(BaseAgent):
         # 决策相关
         self.current_action = VehicleAction.MAINTAIN_SPEED
         self.last_decision_time = 0.0
-        self.decision_cooldown = 0.5  # 决策冷却时间
+        self.decision_cooldown = 5.0  # 决策冷却时间（5秒）
         self.front_vehicle_distance = float('inf')
         self.is_emergency = False
 

@@ -61,8 +61,13 @@ CITY/
 │   │   └── agent_llm_interface.py  # 智能体LLM接口
 │   ├── utils/                # 工具模块
 │   │   └── vector.py        # 2D向量工具
-│   └── visualization/        # 可视化模块
-│       └── renderer.py      # matplotlib渲染器
+│   ├── visualization/        # 可视化模块
+│   │   ├── renderer.py      # matplotlib渲染器
+│   │   └── zoning_visualizer.py  # 城市规划可视化
+│   └── urban_planning/       # 城市规划模块
+│       ├── __init__.py
+│       ├── zone.py          # 功能区域类
+│       └── zoning_agent.py  # 城市规划智能体
 ├── tests/                    # 测试模块
 ├── examples/                 # 示例脚本
 ├── config/                   # 配置文件
@@ -390,6 +395,309 @@ Vehicle.TYPE_PARAMS[VehicleType.ELECTRIC_CAR] = {
 
 ---
 
+## 城市规划智能体 (Urban Planning Agent)
+
+**文件**: `city/urban_planning/zoning_agent.py`
+
+### 功能概述
+
+城市规划智能体是一个基于LLM的城市功能区域规划系统，专门负责规划和管理城市中的各类功能区域，如住宅区、商业区、医院、学校、公园等。它能够分析城市人口需求，自动决策何时/何地规划何种类型的区域。
+
+### 区域类型 (ZoneType)
+
+```python
+from city.urban_planning.zone import ZoneType
+
+# 支持的区域类型
+ZoneType.RESIDENTIAL    # 住宅区 - 浅蓝色
+ZoneType.COMMERCIAL     # 商业区 - 浅橙色
+ZoneType.INDUSTRIAL     # 工业区 - 灰蓝色
+ZoneType.HOSPITAL       # 医院 - 浅红色
+ZoneType.SCHOOL         # 学校 - 浅绿色
+ZoneType.PARK           # 公园/绿地 - 薄荷绿
+ZoneType.OFFICE         # 办公区 - 浅紫色
+ZoneType.MIXED_USE      # 混合用途 - 粉色
+ZoneType.GOVERNMENT     # 政府机构 - 青绿色
+ZoneType.SHOPPING       # 购物中心 - 浅黄色
+```
+
+### 核心组件
+
+#### 1. Zone - 功能区域类
+
+```python
+from city.urban_planning.zone import Zone, ZoneType
+from city.utils.vector import Vector2D
+
+# 创建住宅区
+residential_zone = Zone(
+    zone_type=ZoneType.RESIDENTIAL,
+    center=Vector2D(100, 200),
+    width=120,      # 米
+    height=100,     # 米
+    name="住宅区_A"
+)
+
+# 区域属性
+print(residential_zone.area)           # 面积 (m²)
+print(residential_zone.max_population) # 最大人口容量
+print(residential_zone.bounds)         # 边界 (min_x, min_y, max_x, max_y)
+```
+
+#### 2. ZoneManager - 区域管理器
+
+```python
+from city.urban_planning.zone import ZoneManager
+
+manager = ZoneManager()
+
+# 添加区域
+manager.add_zone(residential_zone)
+
+# 查询区域
+zones = manager.get_zones_by_type(ZoneType.RESIDENTIAL)
+nearest = manager.find_nearest_zone(Vector2D(0, 0))
+overlapping = manager.check_overlap(new_zone)
+
+# 获取统计
+stats = manager.get_statistics()
+```
+
+#### 3. ZoningAgent - 城市规划智能体
+
+```python
+from city.urban_planning.zoning_agent import ZoningAgent
+
+zoning_agent = ZoningAgent(
+    environment=env,
+    use_llm=True,               # 使用LLM进行决策
+    planning_interval=20.0,     # 规划间隔（秒）
+    max_zones=30,               # 最大区域数
+    min_zone_size=50.0,         # 最小区域尺寸
+    max_zone_size=200.0,        # 最大区域尺寸
+    buffer_distance=20.0        # 区域间缓冲距离
+)
+
+env.add_agent(zoning_agent)
+```
+
+### 工作流程
+
+1. **需求分析**: 根据人口数量和现有区域分布，分析城市服务需求
+2. **类型决策**: 确定下一个需要规划的区域类型（优先满足学校、医院等基础设施需求）
+3. **位置规划**: 使用LLM或规则选择最佳位置
+   - 住宅区：分散布置
+   - 商业区：靠近中心或主干道
+   - 医院/学校：服务覆盖最大化
+   - 工业区：远离住宅区，靠近边缘
+   - 公园：靠近住宅区
+4. **冲突检测**: 确保新区域不与现有区域重叠
+5. **执行规划**: 创建区域并连接到道路网络
+
+### 规划策略
+
+```python
+# LLM规划示例提示
+"""
+你是一位城市规划专家。请为城市规划一个新的功能区域。
+
+规划目标: 学校
+当前城市状态:
+  - 总区域数: 5
+  - 网络范围: X[0, 800], Y[0, 800]
+  - 现有住宅区: 3个
+
+规划约束:
+1. 位置应靠近住宅区，方便学生上学
+2. 大小: 宽度 60-150米, 高度 60-150米
+3. 不应与现有区域重叠
+
+输出JSON格式决策:
+{
+    "center_x": 整数,
+    "center_y": 整数,
+    "width": 宽度,
+    "height": 高度,
+    "name": "区域名称",
+    "reasoning": "规划理由"
+}
+"""
+```
+
+### 可视化
+
+#### 区域可视化器
+
+```python
+from city.visualization.zoning_visualizer import ZoningVisualizer
+
+visualizer = ZoningVisualizer(
+    environment=env,
+    zoning_agent=zoning_agent,
+    figsize=(14, 12),
+    zone_alpha=0.6    # 区域透明度
+)
+
+# 运行仿真时更新可视化
+while env.is_running:
+    env.step()
+    visualizer.render()
+
+# 保存截图
+visualizer.save_frame("city_zoning.png")
+```
+
+#### 集成可视化器
+
+```python
+from city.visualization.zoning_visualizer import IntegratedCityVisualizer
+
+# 同时显示功能区域和交通仿真
+visualizer = IntegratedCityVisualizer(
+    env,
+    zoning_agent=zoning_agent,
+    figsize=(16, 10),
+    enable_zones=True,
+    enable_traffic=True
+)
+
+visualizer.render()
+```
+
+### 区域颜色映射
+
+| 区域类型 | 颜色 | 用途 |
+|---------|------|------|
+| 住宅区 | 浅蓝色 #E3F2FD | 居住 |
+| 商业区 | 浅橙色 #FFE0B2 | 商业活动 |
+| 工业区 | 灰蓝色 #CFD8DC | 工业生产 |
+| 医院 | 浅红色 #FFCDD2 | 医疗服务 |
+| 学校 | 浅绿色 #C8E6C9 | 教育 |
+| 公园 | 薄荷绿 #B9F6CA | 休闲绿地 |
+| 办公区 | 浅紫色 #D1C4E9 | 办公 |
+| 混合区 | 粉色 #F8BBD9 | 多功能 |
+
+### 运行演示
+
+```bash
+# 城市规划演示（带可视化）
+python examples/zoning_demo.py --visual
+
+# 不使用LLM（仅规则规划）
+python examples/zoning_demo.py --visual --no-llm
+
+# 集成路网规划 + 城市规划
+python examples/integrated_city_planning.py --visual
+```
+
+---
+
+## 路网规划智能体 (Road Planning Agent)
+
+**文件**: `city/agents/planning_agent.py`
+
+### 功能概述
+
+路网规划智能体是一个基于LLM的智能系统，能够动态分析交通需求并自主扩展道路网络。它从2×2网格开始，通过监测车辆OD（起点-终点）模式来识别交通瓶颈，并使用LLM决策何时/何地添加新道路或节点。
+
+### 核心组件
+
+#### 1. ODAnalyzer - OD需求分析器
+
+```python
+analyzer = ODAnalyzer(window_size=100)
+
+# 记录车辆OD
+analyzer.record_vehicle_od(vehicle)
+
+# 分析需求模式
+patterns = analyzer.analyze_demand_patterns()
+# 返回: {
+#   'patterns': [...],     # 高频OD对
+#   'hotspots': [...],     # 热点节点
+#   'total_records': 100,
+#   'unique_od_pairs': 20
+# }
+```
+
+#### 2. PlanningAgent - 规划智能体
+
+```python
+from city.agents.planning_agent import PlanningAgent
+
+planning_agent = PlanningAgent(
+    environment=env,
+    use_llm=True,
+    expansion_cooldown=60.0,    # 扩展冷却时间（秒）
+    max_nodes=16,               # 最大节点数限制
+    min_edge_length=150.0,      # 最小边长度
+    max_edge_length=400.0       # 最大边长度
+)
+
+env.add_agent(planning_agent)
+```
+
+### 工作流程
+
+1. **数据收集**: 监测仿真中所有车辆的OD模式
+2. **需求分析**: 识别高频OD对和拥堵路段
+3. **候选生成**: 基于以下策略生成扩展候选：
+   - 连接高需求但无直接连接的OD对
+   - 为拥堵路段添加绕行路线
+4. **LLM决策**: 使用LLM评估候选并选择最佳扩展方案
+5. **执行扩展**: 动态添加节点或边到路网
+
+### 扩展类型
+
+```python
+# 类型1: 添加边（连接现有节点）
+{
+    "should_expand": True,
+    "action": "add_edge",
+    "from_node": "node_1",
+    "to_node": "node_2",
+    "num_lanes": 2,
+    "reason": "High demand OD pair without direct connection"
+}
+
+# 类型2: 添加节点和边
+{
+    "should_expand": True,
+    "action": "add_node_and_edge",
+    "new_node_position": {"x": 450, "y": 300},
+    "num_lanes": 2,
+    "reason": "Creating new intersection for better connectivity"
+}
+```
+
+### 前端路网规划模式
+
+**访问路径**: 前端界面第四个Tab "路网规划"
+
+**功能特点**:
+- 可视化显示2×2初始网格和动态扩展的路网
+- 绿色高亮显示新添加的节点和边
+- 实时显示规划智能体状态（扩展次数、OD记录数）
+- 扩展历史时间线
+- 支持缩放、平移操作
+
+### API端点
+
+```
+GET  /api/planning/network       # 获取路网数据
+GET  /api/planning/state         # 获取完整状态
+POST /api/planning/control       # 控制仿真 (start/pause/reset)
+POST /api/planning/spawn         # 生成车辆
+GET  /api/planning/expansion     # 获取扩展历史
+```
+
+WebSocket事件:
+- `planning_connect` - 连接路网规划模式
+- `planning_update` - 仿真状态更新
+- `planning_vehicle_spawned` - 车辆生成确认
+
+---
+
 ## 待办事项
 
 - [x] 搭建项目基础结构
@@ -402,6 +710,8 @@ Vehicle.TYPE_PARAMS[VehicleType.ELECTRIC_CAR] = {
 - [x] 实现仿真环境
 - [x] 添加可视化模块
 - [x] **集成大语言模型API**
+- [x] **路网规划智能体** - 基于OD分析动态扩展路网
+- [x] **城市规划智能体** - 基于LLM的功能区域规划
 - [ ] 集成真实 RL 框架
 - [ ] 支持 OpenStreetMap 数据导入
 - [ ] 性能优化（支持大规模仿真）
@@ -415,4 +725,4 @@ Vehicle.TYPE_PARAMS[VehicleType.ELECTRIC_CAR] = {
 
 ---
 
-*最后更新: 2026-02-26*
+*最后更新: 2026-03-09*

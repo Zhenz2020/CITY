@@ -298,8 +298,8 @@ def load_llm_from_config(config_path: str) -> LLMClient:
     if provider == LLMProvider.SILICONFLOW and model == 'gpt-3.5-turbo':
         model = 'Qwen/Qwen3-14B'  # SiliconFlow默认模型
 
-    # 初始化LLMClientPool（如果有多个API Key）
-    if len(api_keys) > 1:
+    # 初始化LLMClientPool（只要有API Key就初始化）
+    if len(api_keys) >= 1:
         try:
             from city.llm.llm_pool import get_llm_pool
             pool = get_llm_pool()

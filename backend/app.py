@@ -21,6 +21,7 @@ from city.environment.road_network import RoadNetwork, Node, TrafficLight
 from city.agents.vehicle import Vehicle, VehicleType
 from city.agents.pedestrian import Pedestrian
 from city.agents.traffic_manager import TrafficManager
+from city.agents.traffic_light_agent import TrafficLightAgent
 from city.utils.vector import Vector2D
 
 # 加载 LLM 配置 - 支持多API Key
@@ -127,6 +128,7 @@ def create_demo_simulation() -> SimulationEnvironment:
         for j in range(1, GRID_SIZE - 1):
             intersection_node = nodes[(i, j)]
             if intersection_node.is_intersection:
+                traffic_light_agent = TrafficLightAgent(
                     control_node=intersection_node,
                     environment=env,
                     use_llm=LLM_AVAILABLE,
@@ -201,6 +203,7 @@ def get_network_data(env: SimulationEnvironment) -> dict:
             "length": edge.length,
             "num_lanes": len(edge.lanes)
         })
+    print(f"[get_network_data] 返回 {len(nodes_data)} 个节点, {len(edges_data)} 条边")
     return {"nodes": nodes_data, "edges": edges_data}
 
 def get_agents_data(env: SimulationEnvironment) -> dict:
@@ -255,6 +258,7 @@ def get_traffic_lights_data(env: SimulationEnvironment) -> list:
     # 首先收集所有红绿灯智能体的相位信息
     tl_agent_phases = {}
     for agent in env.agents.values():
+        if isinstance(agent, TrafficLightAgent):
             phase_name = agent.current_phase.name
             # 解析相位，确定各方向状态
             ns_green = 'NS_GREEN' in phase_name
@@ -293,6 +297,7 @@ def get_traffic_light_agents_data(env: SimulationEnvironment) -> list:
     """获取红绿灯智能体数据。"""
     agents_data = []
     for agent in env.agents.values():
+        if isinstance(agent, TrafficLightAgent):
             agents_data.append({
                 "id": agent.agent_id,
                 "type": "traffic_light_agent",
@@ -306,10 +311,9 @@ def get_traffic_light_agents_data(env: SimulationEnvironment) -> list:
     return agents_data
 
 def safe_emit(event, data):
-    """线程安全的 WebSocket 发送。"""
+    """线程安全的 WebSocket 发送（简化版）。"""
     try:
-        with app.app_context():
-            socketio.emit(event, data)
+        socketio.emit(event, data)
     except Exception as e:
         print(f"[safe_emit] 发送失败: {e}")
 
@@ -508,6 +512,7 @@ def get_traffic_light_status(agent_id: str):
             return jsonify({"error": "仿真未初始化"}), 400
         
         agent = simulation.agents.get(agent_id)
+        if not agent or not isinstance(agent, TrafficLightAgent):
             return jsonify({"error": "红绿灯智能体未找到"}), 404
         
         # 获取详细状态
@@ -569,6 +574,855 @@ def handle_spawn_vehicle(data):
             })
         else:
             emit("error", {"message": "生成车辆失败"})
+
+# ========== 路网规划模式 (Road Planning Mode) ==========
+
+# 路网规划模式全局状态
+planning_simulation: SimulationEnvironment | None = None
+planning_thread: threading.Thread | None = None
+is_planning_running = False
+planning_lock = threading.Lock()
+
+def create_planning_simulation(agent_configs: dict | None = None) -> SimulationEnvironment:
+    """创建路网规划模式的仿真环境 - 从2x2网格开始。
+    
+    Args:
+        agent_configs: 智能体LLM配置，格式为 {'vehicle': True, 'traffic_light': True, 'planning': True}
+    """
+    from city.agents.planning_agent import PlanningAgent
+    from city.agents.zoning_agent import ZoningAgent
+    
+    # 默认配置
+    configs = {
+        'vehicle': True,
+        'traffic_light': True,
+        'planning': True
+    }
+    if agent_configs:
+        configs.update(agent_configs)
+    
+    print(f"[路网规划] 智能体LLM配置: {configs}")
+    
+    network = RoadNetwork("planning_grid")
+    nodes: dict[tuple[int, int], Node] = {}
+    
+    # 从2x2网格开始
+    GRID_SIZE = 2
+    NODE_SPACING = 300  # 300米间距
+    
+    # 创建节点
+    for i in range(GRID_SIZE):
+        for j in range(GRID_SIZE):
+            pos = Vector2D(j * NODE_SPACING, i * NODE_SPACING)
+            node = Node(position=pos, name=f"node_{i}_{j}")
+            network.add_node(node)
+            nodes[(i, j)] = node
+    
+    # 创建基础网格边
+    for i in range(GRID_SIZE):
+        for j in range(GRID_SIZE):
+            current = nodes[(i, j)]
+            # 向右连接
+            if j + 1 < GRID_SIZE:
+                right = nodes[(i, j + 1)]
+                network.create_edge(current, right, num_lanes=2, bidirectional=True)
+            # 向下连接
+            if i + 1 < GRID_SIZE:
+                down = nodes[(i + 1, j)]
+                network.create_edge(current, down, num_lanes=2, bidirectional=True)
+    
+    # 创建仿真环境
+    config = SimulationConfig()
+    env = SimulationEnvironment(network, config)
+    
+    # 添加人口驱动的路网规划智能体（专注于路网扩展）
+    # 兼容旧版配置 'planning'，新版使用 'road_planning'
+    road_planning_use_llm = configs.get('road_planning', configs.get('planning', True)) and LLM_AVAILABLE
+    planning_agent = PlanningAgent(
+        environment=env,
+        use_llm=road_planning_use_llm,
+        population_per_node=5,       # 每个节点5辆车（人口）- 增加初始容量
+        expansion_threshold=0.5,     # 50%容量时扩张 - 降低阈值便于快速扩张
+        spawn_interval=2.0,          # 每2秒尝试生成新车 - 加快生成
+        max_nodes=20,
+        min_edge_length=200.0,
+        max_edge_length=500.0
+    )
+    env.add_agent(planning_agent)
+    planning_agent.activate()
+    print(f"[路网规划] 添加路网规划智能体 {planning_agent.agent_id} (LLM={'启用' if road_planning_use_llm else '禁用'})")
+    
+    # 添加城市规划智能体（专注于功能区域规划）
+    # 兼容旧版配置 'planning'，新版使用 'zoning'
+    zoning_use_llm = configs.get('zoning', configs.get('planning', True)) and LLM_AVAILABLE
+    zoning_agent = ZoningAgent(
+        environment=env,
+        use_llm=zoning_use_llm,
+        planning_interval=15.0,      # 每15秒尝试规划
+        max_zones=30
+    )
+    env.add_agent(zoning_agent)
+    zoning_agent.activate()
+    print(f"[城市规划] 添加城市规划智能体 {zoning_agent.agent_id} (LLM={'启用' if zoning_use_llm else '禁用'})")
+    
+    # 创建初始功能区域（让页面打开时就有内容显示）
+    from city.urban_planning.zone import Zone, ZoneType
+    initial_zones = [
+        (ZoneType.RESIDENTIAL, Vector2D(150, 150), 100, 80, "阳光小区"),
+        (ZoneType.COMMERCIAL, Vector2D(450, 150), 80, 60, "中心商业街"),
+        (ZoneType.SCHOOL, Vector2D(150, 450), 90, 70, "希望小学"),
+        (ZoneType.PARK, Vector2D(450, 450), 100, 100, "市民公园"),
+    ]
+    
+    for zone_type, center, width, height, name in initial_zones:
+        zone = Zone(
+            zone_type=zone_type,
+            center=center,
+            width=width,
+            height=height,
+            name=name
+        )
+        zone.planning_time = 0.0
+        zone.planning_reason = "初始规划"
+        zone.population = int(zone.max_population * 0.3)  # 初始30%人口
+        zoning_agent.zone_manager.add_zone(zone)
+    
+    print(f"[城市规划] 创建 {len(initial_zones)} 个初始功能区域")
+    
+    print(f"[系统] 共添加 {len(env.agents)} 个智能体")
+    
+    # 存储智能体LLM配置到环境，供生成车辆时使用
+    env.agent_configs = configs
+    
+    # 为所有交叉口添加红绿灯
+    traffic_light_use_llm = configs.get('traffic_light', True) and LLM_AVAILABLE
+    for node in network.nodes.values():
+        # 计算节点的总边数（入边 + 出边）
+        total_edges = len(node.incoming_edges) + len(node.outgoing_edges)
+        if total_edges > 2:  # 交叉口
+            tl = TrafficLight(node=node, cycle_time=60.0)
+            node.traffic_light = tl
+            
+            # 添加红绿灯智能体
+            tl_agent = TrafficLightAgent(
+                control_node=node,
+                name=f"TL_{node.name}",
+                environment=env,
+                use_llm=traffic_light_use_llm
+            )
+            tl_agent.activate()
+            env.add_agent(tl_agent)
+            print(f"[路网规划] 添加红绿灯智能体 {tl_agent.agent_id} (LLM={'启用' if traffic_light_use_llm else '禁用'})")
+    
+    print(f"[路网规划] 创建2x2初始网格，节点间距{NODE_SPACING}m")
+    return env
+
+def planning_simulation_loop():
+    """路网规划仿真循环。"""
+    global is_planning_running
+    
+    print("[路网规划循环] 启动", flush=True)
+    step_count = 0
+    last_log_time = time.time()
+    
+    while True:
+        try:
+            # 检查是否应该停止
+            with planning_lock:
+                should_stop = not is_planning_running or planning_simulation is None
+            
+            if should_stop:
+                print("[路网规划循环] 停止", flush=True)
+                break
+            
+            # 执行仿真步（在锁内）
+            with planning_lock:
+                step_result = planning_simulation.step()
+                step_count += 1
+                current_time = planning_simulation.current_time
+                vehicles_count = len(planning_simulation.vehicles)
+            
+            # 打印每一步（用于调试）
+            if step_count % 20 == 0:  # 每20步打印一次
+                print(f"[仿真步] step={step_count}, time={current_time:.1f}s, vehicles={vehicles_count}", flush=True)
+            
+            if not step_result:
+                print(f"[路网规划循环] step() 返回 False，停止", flush=True)
+                with planning_lock:
+                    is_planning_running = False
+                safe_emit("planning_ended", {})
+                break
+            
+            # 每10步发送一次更新
+            if step_count % 10 == 0:
+                try:
+                    with planning_lock:
+                        # 获取网络数据
+                        network_data = get_network_data(planning_simulation) if planning_simulation else {"nodes": [], "edges": []}
+                        # 获取车辆数据
+                        agents_data = get_agents_data(planning_simulation) if planning_simulation else {"vehicles": [], "pedestrians": []}
+                        # 获取交通灯数据
+                        traffic_lights_data = get_traffic_lights_data(planning_simulation) if planning_simulation else []
+                        # 获取区域数据
+                        zones_data = get_zoning_data(planning_simulation) if planning_simulation else []
+                        # 获取智能体状态
+                        from city.agents.planning_agent import PlanningAgent
+                        from city.agents.zoning_agent import ZoningAgent
+                        planning_agent_status = None
+                        zoning_agent_status = None
+                        for agent in planning_simulation.agents.values():
+                            if isinstance(agent, PlanningAgent):
+                                planning_agent_status = agent.get_status()
+                            elif isinstance(agent, ZoningAgent):
+                                zoning_agent_status = agent.get_status()
+                    
+                    data = {
+                        "time": current_time,
+                        "is_running": is_planning_running,
+                        "agents": agents_data,
+                        "traffic_lights": traffic_lights_data,
+                        "network": network_data,
+                        "zones": zones_data,
+                        "planning_agent": planning_agent_status,
+                        "zoning_agent": zoning_agent_status,
+                        "expansion_history": [],
+                        "statistics": {"active_vehicles": vehicles_count}
+                    }
+                    safe_emit("planning_update", data)
+                    
+                    # 每50步打印发送详情（包含zones数量）
+                    if step_count % 50 == 0:
+                        print(f"[WebSocket] 发送更新: time={current_time:.1f}s, nodes={len(network_data.get('nodes', []))}, zones={len(zones_data)}, vehicles={len(agents_data.get('vehicles', []))}", flush=True)
+                        
+                except Exception as e:
+                    print(f"[WebSocket] 发送失败: {e}", flush=True)
+            
+            # 每秒打印一次状态
+            if time.time() - last_log_time >= 1.0:
+                print(f"[状态] time={current_time:.1f}s, step={step_count}, vehicles={vehicles_count}", flush=True)
+                last_log_time = time.time()
+            
+            time.sleep(0.05)
+            
+        except Exception as e:
+            print(f"[路网规划循环错误] {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            time.sleep(0.1)
+    
+    print(f"[路网规划循环] 结束，共运行 {step_count} 步", flush=True)
+
+# 路网规划模式API端点
+@app.route("/api/planning/network", methods=["GET"])
+def get_planning_network():
+    """获取路网规划模式的网络状态。"""
+    with planning_lock:
+        if planning_simulation is None:
+            return jsonify({"error": "路网规划仿真未初始化"}), 400
+        return jsonify(get_network_data(planning_simulation))
+
+@app.route("/api/planning/state", methods=["GET"])
+def get_planning_state():
+    """获取路网规划模式的完整状态（快速响应版）。"""
+    with planning_lock:
+        if planning_simulation is None:
+            return jsonify({"error": "路网规划仿真未初始化"}), 400
+        
+        # 只收集基本数据，避免复杂计算
+        from city.agents.planning_agent import PlanningAgent
+        from city.agents.zoning_agent import ZoningAgent
+        
+        planning_agent_status = None
+        zoning_agent_status = None
+        for agent in planning_simulation.agents.values():
+            if isinstance(agent, PlanningAgent):
+                planning_agent_status = agent.get_status()
+            elif isinstance(agent, ZoningAgent):
+                zoning_agent_status = agent.get_status()
+        
+        # 简化的agents数据
+        simple_agents = {
+            "vehicles": [{"id": v.agent_id, "type": "vehicle"} for v in planning_simulation.vehicles.values()],
+            "pedestrians": []
+        }
+        
+        # 获取区域数据
+        zones_data = get_zoning_data(planning_simulation)
+        
+        return jsonify({
+            "time": planning_simulation.current_time,
+            "is_running": is_planning_running,
+            "agents": simple_agents,
+            "traffic_lights": [],
+            "network": {"nodes": [], "edges": []},
+            "expansion_history": [],
+            "planning_agent": planning_agent_status,
+            "zoning_agent": zoning_agent_status,
+            "zones": zones_data,
+            "statistics": {"active_vehicles": len(planning_simulation.vehicles)}
+        })
+
+@app.route("/api/planning/control", methods=["POST"])
+def control_planning_simulation():
+    """控制路网规划仿真。"""
+    global planning_simulation, is_planning_running, planning_thread
+    
+    data = request.json or {}
+    action = data.get("action")
+    agent_configs = data.get("agent_configs", {
+        'vehicle': True,
+        'traffic_light': True,
+        'planning': True
+    })
+    
+    print(f"[Planning Control] 收到请求: action={action}", flush=True)
+    
+    if action == "start":
+        with planning_lock:
+            print(f"[Planning Control] 当前状态: planning_simulation={planning_simulation is not None}, is_planning_running={is_planning_running}", flush=True)
+            
+            if planning_simulation is None:
+                print("[Planning Control] 创建新仿真环境...", flush=True)
+                planning_simulation = create_planning_simulation(agent_configs)
+                print("[Planning Control] 仿真环境创建完成", flush=True)
+            
+            if not is_planning_running:
+                is_planning_running = True
+                planning_simulation.start()
+                print("[Planning Control] 仿真已启动", flush=True)
+                
+                # 检查线程是否已在运行
+                if planning_thread is None or not planning_thread.is_alive():
+                    print("[Planning Control] 启动仿真线程...", flush=True)
+                    planning_thread = threading.Thread(target=planning_simulation_loop)
+                    planning_thread.daemon = True
+                    planning_thread.start()
+                    print("[Planning Control] 仿真线程已启动", flush=True)
+                else:
+                    print("[Planning Control] 仿真线程已在运行", flush=True)
+            else:
+                print("[Planning Control] 仿真已在运行中", flush=True)
+                
+        return jsonify({"status": "started", "agent_configs": agent_configs})
+    
+    elif action == "pause":
+        print("[Planning Control] 暂停仿真", flush=True)
+        with planning_lock:
+            is_planning_running = False
+            if planning_simulation:
+                planning_simulation.pause()
+        return jsonify({"status": "paused"})
+    
+    elif action == "reset":
+        print("[Planning Control] 重置仿真", flush=True)
+        with planning_lock:
+            is_planning_running = False
+            if planning_simulation:
+                planning_simulation.reset()
+            planning_simulation = create_planning_simulation(agent_configs)
+        return jsonify({"status": "reset", "agent_configs": agent_configs})
+    
+    print(f"[Planning Control] 未知操作: {action}", flush=True)
+    return jsonify({"error": "未知操作"}), 400
+
+@app.route("/api/planning/spawn", methods=["POST"])
+def spawn_planning_vehicle():
+    """在路网规划模式中生成车辆。"""
+    with planning_lock:
+        if planning_simulation is None:
+            return jsonify({"error": "路网规划仿真未初始化"}), 400
+        
+        data = request.json or {}
+        
+        import random
+        all_nodes = list(planning_simulation.road_network.nodes.values())
+        if len(all_nodes) < 2:
+            return jsonify({"error": "节点不足"}), 400
+        
+        start = random.choice(all_nodes)
+        available_ends = [n for n in all_nodes if n != start]
+        end = random.choice(available_ends)
+        
+        vtype_name = data.get("vehicle_type", "CAR")
+        vtype = VehicleType[vtype_name]
+        
+        vehicle = planning_simulation.spawn_vehicle(start, end, vtype)
+        
+        if vehicle:
+            vehicle.use_llm = LLM_AVAILABLE
+            print(f"[路网规划-生成车辆] {vehicle.agent_id}")
+            return jsonify({
+                "vehicle_id": vehicle.agent_id,
+                "start": start.name,
+                "end": end.name,
+                "route_length": len(vehicle.route)
+            })
+        else:
+            return jsonify({"error": "生成车辆失败"}), 500
+
+@app.route("/api/planning/expansion", methods=["GET"])
+def get_expansion_history():
+    """获取路网扩展历史。"""
+    with planning_lock:
+        if planning_simulation is None:
+            return jsonify({"error": "路网规划仿真未初始化"}), 400
+        
+        return jsonify({
+            "expansion_history": planning_simulation.get_expansion_history(),
+            "current_time": planning_simulation.current_time
+        })
+
+@app.route("/api/planning/debug", methods=["GET"])
+def get_planning_debug():
+    """获取路网规划调试信息。"""
+    with planning_lock:
+        if planning_simulation is None:
+            return jsonify({"error": "路网规划仿真未初始化"}), 400
+        
+        network = planning_simulation.road_network
+        
+        # 收集节点连接信息
+        nodes_info = []
+        for node in network.nodes.values():
+            connections = [e.to_node.node_id for e in node.outgoing_edges]
+            nodes_info.append({
+                "id": node.node_id,
+                "name": node.name,
+                "x": node.position.x,
+                "y": node.position.y,
+                "outgoing_edges": connections,
+                "outgoing_count": len(node.outgoing_edges),
+                "incoming_count": len(node.incoming_edges)
+            })
+        
+        # 收集边信息
+        edges_info = []
+        for edge in network.edges.values():
+            edges_info.append({
+                "id": edge.edge_id,
+                "from": edge.from_node.node_id,
+                "to": edge.to_node.node_id,
+                "length": edge.length
+            })
+        
+        return jsonify({
+            "nodes": nodes_info,
+            "edges": edges_info,
+            "total_nodes": len(network.nodes),
+            "total_edges": len(network.edges)
+        })
+
+# WebSocket事件处理
+@socketio.on("planning_connect")
+def handle_planning_connect():
+    """客户端连接路网规划模式。"""
+    print(f"[WebSocket] 路网规划客户端已连接: {request.sid}")
+    emit("planning_connected", {"message": "路网规划模式连接成功"})
+
+@socketio.on("get_planning_network")
+def handle_get_planning_network():
+    """获取路网规划网络数据。"""
+    with planning_lock:
+        if planning_simulation:
+            emit("planning_network_data", get_network_data(planning_simulation))
+
+@socketio.on("planning_spawn_vehicle")
+def handle_planning_spawn_vehicle(data):
+    """在路网规划模式中生成车辆。"""
+    with planning_lock:
+        if planning_simulation is None:
+            emit("error", {"message": "路网规划仿真未运行"})
+            return
+        
+        import random
+        all_nodes = list(planning_simulation.road_network.nodes.values())
+        if len(all_nodes) < 2:
+            emit("error", {"message": "节点不足"})
+            return
+        
+        start = random.choice(all_nodes)
+        available_ends = [n for n in all_nodes if n != start]
+        end = random.choice(available_ends)
+        
+        vtype_name = data.get("vehicle_type", "CAR")
+        vtype = VehicleType[vtype_name]
+        
+        vehicle = planning_simulation.spawn_vehicle(start, end, vtype)
+        
+        if vehicle:
+            vehicle.use_llm = LLM_AVAILABLE
+            print(f"[路网规划-生成车辆] {vehicle.agent_id}")
+            emit("planning_vehicle_spawned", {
+                "vehicle_id": vehicle.agent_id,
+                "start": start.name,
+                "end": end.name,
+                "route_length": len(vehicle.route)
+            })
+        else:
+            emit("error", {"message": "生成车辆失败"})
+
+# ========== 城市规划模式 (Urban Planning Mode) ==========
+
+# 城市规划模式全局状态
+zoning_simulation: SimulationEnvironment | None = None
+zoning_thread: threading.Thread | None = None
+is_zoning_running = False
+zoning_lock = threading.Lock()
+
+def create_zoning_simulation() -> SimulationEnvironment:
+    """创建城市规划模式的仿真环境。"""
+    from city.agents.planning_agent import PlanningAgent
+    from city.urban_planning.zoning_agent import ZoningAgent
+    
+    network = RoadNetwork("zoning_city")
+    nodes: dict[tuple[int, int], Node] = {}
+    
+    # 创建3x3网格作为基础
+    GRID_SIZE = 3
+    NODE_SPACING = 400
+    
+    for i in range(GRID_SIZE):
+        for j in range(GRID_SIZE):
+            pos = Vector2D(j * NODE_SPACING, i * NODE_SPACING)
+            node = Node(position=pos, name=f"node_{i}_{j}")
+            network.add_node(node)
+            nodes[(i, j)] = node
+    
+    # 创建基础网格边
+    for i in range(GRID_SIZE):
+        for j in range(GRID_SIZE):
+            current = nodes[(i, j)]
+            if j + 1 < GRID_SIZE:
+                right = nodes[(i, j + 1)]
+                network.create_edge(current, right, num_lanes=2, bidirectional=True)
+            if i + 1 < GRID_SIZE:
+                down = nodes[(i + 1, j)]
+                network.create_edge(current, down, num_lanes=2, bidirectional=True)
+    
+    # 创建仿真环境
+    config = SimulationConfig()
+    env = SimulationEnvironment(network, config)
+    
+    # 添加路网规划Agent
+    planning_agent = PlanningAgent(
+        environment=env,
+        use_llm=LLM_AVAILABLE,
+        population_per_node=3,
+        expansion_threshold=0.7,
+        spawn_interval=4.0,
+        max_nodes=16,
+        min_edge_length=200.0,
+        max_edge_length=500.0
+    )
+    env.add_agent(planning_agent)
+    planning_agent.activate()
+    
+    # 添加城市规划Agent
+    zoning_agent = ZoningAgent(
+        environment=env,
+        use_llm=LLM_AVAILABLE,
+        planning_interval=20.0,
+        max_zones=25,
+        min_zone_size=60.0,
+        max_zone_size=150.0,
+        buffer_distance=20.0
+    )
+    env.add_agent(zoning_agent)
+    
+    # 添加红绿灯
+    for node in network.nodes.values():
+        total_edges = len(node.incoming_edges) + len(node.outgoing_edges)
+        if total_edges > 2:
+            tl = TrafficLight(node=node, cycle_time=60.0)
+            node.traffic_light = tl
+            tl_agent = TrafficLightAgent(
+                control_node=node,
+                name=f"TL_{node.name}",
+                environment=env,
+                use_llm=LLM_AVAILABLE
+            )
+            tl_agent.activate()
+            env.add_agent(tl_agent)
+    
+    print(f"[城市规划] 创建3x3初始网格，添加了路网规划和城市规划Agent")
+    return env
+
+def get_zoning_data(env: SimulationEnvironment) -> list:
+    """获取城市功能区域数据。"""
+    from city.agents.zoning_agent import ZoningAgent
+    
+    zones_data = []
+    for agent in env.agents.values():
+        # 从独立的城市规划智能体获取区域数据
+        if isinstance(agent, ZoningAgent):
+            for zone in agent.zone_manager.zones.values():
+                # 确保所有数据都是可JSON序列化的
+                bounds = zone.bounds
+                if bounds:
+                    bounds = [float(bounds[0]), float(bounds[1]), float(bounds[2]), float(bounds[3])]
+                
+                zones_data.append({
+                    'zone_id': zone.zone_id,
+                    'zone_type': zone.zone_type.name,
+                    'zone_type_display': zone.zone_type.display_name,
+                    'name': zone.name,
+                    'center_x': float(zone.center.x),
+                    'center_y': float(zone.center.y),
+                    'width': float(zone.width),
+                    'height': float(zone.height),
+                    'area': float(zone.area),
+                    'color': zone.zone_type.color,
+                    'border_color': zone.zone_type.border_color,
+                    'population': int(zone.population),
+                    'max_population': int(zone.max_population),
+                    'development_level': float(zone.development_level),
+                    'bounds': bounds,
+                    'planning_time': zone.planning_time,
+                    'planning_reason': zone.planning_reason
+                })
+            break
+    return zones_data
+
+def get_zoning_agent_status(env: SimulationEnvironment) -> dict | None:
+    """获取城市规划智能体状态。"""
+    from city.agents.zoning_agent import ZoningAgent
+    
+    for agent in env.agents.values():
+        if isinstance(agent, ZoningAgent):
+            return agent.get_status()
+    return None
+
+def get_zoning_agent_status(env: SimulationEnvironment) -> dict | None:
+    """获取城市规划Agent状态。"""
+    from city.urban_planning.zoning_agent import ZoningAgent
+    
+    for agent in env.agents.values():
+        if isinstance(agent, ZoningAgent):
+            return agent.get_status()
+    return None
+
+def zoning_simulation_loop():
+    """城市规划仿真循环。"""
+    global is_zoning_running
+    
+    print("[城市规划循环] 启动")
+    
+    while True:
+        with zoning_lock:
+            if not is_zoning_running or zoning_simulation is None:
+                print("[城市规划循环] 停止")
+                break
+        
+        try:
+            with zoning_lock:
+                if zoning_simulation is None:
+                    break
+                step_result = zoning_simulation.step()
+            
+            if not step_result:
+                with zoning_lock:
+                    is_zoning_running = False
+                safe_emit("zoning_ended", {})
+                break
+            
+            # 定期发送更新
+            with zoning_lock:
+                current_time = zoning_simulation.current_time
+                should_update = int(current_time * 10) % 3 == 0
+            
+            if should_update:
+                with zoning_lock:
+                    data = {
+                        "time": zoning_simulation.current_time,
+                        "agents": get_agents_data(zoning_simulation),
+                        "traffic_lights": get_traffic_lights_data(zoning_simulation),
+                        "network": get_network_data(zoning_simulation),
+                        "zones": get_zoning_data(zoning_simulation),
+                        "zoning_agent": get_zoning_agent_status(zoning_simulation),
+                        "statistics": zoning_simulation.get_statistics()
+                    }
+                safe_emit("zoning_update", data)
+            
+            time.sleep(0.05)
+            
+        except Exception as e:
+            print(f"[城市规划循环错误] {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(0.1)
+    
+    print("[城市规划循环] 结束")
+
+# 城市规划模式API端点
+@app.route("/api/zoning/network", methods=["GET"])
+def get_zoning_network():
+    """获取城市规划模式的网络状态。"""
+    with zoning_lock:
+        if zoning_simulation is None:
+            return jsonify({"error": "城市规划仿真未初始化"}), 400
+        return jsonify(get_network_data(zoning_simulation))
+
+@app.route("/api/zoning/zones", methods=["GET"])
+def get_zoning_zones():
+    """获取所有功能区域。"""
+    with zoning_lock:
+        if zoning_simulation is None:
+            return jsonify({"error": "城市规划仿真未初始化"}), 400
+        return jsonify({"zones": get_zoning_data(zoning_simulation)})
+
+@app.route("/api/zoning/state", methods=["GET"])
+def get_zoning_state():
+    """获取城市规划模式的完整状态。"""
+    with zoning_lock:
+        if zoning_simulation is None:
+            return jsonify({"error": "城市规划仿真未初始化"}), 400
+        
+        return jsonify({
+            "time": zoning_simulation.current_time,
+            "is_running": is_zoning_running,
+            "agents": get_agents_data(zoning_simulation),
+            "traffic_lights": get_traffic_lights_data(zoning_simulation),
+            "network": get_network_data(zoning_simulation),
+            "zones": get_zoning_data(zoning_simulation),
+            "zoning_agent": get_zoning_agent_status(zoning_simulation),
+            "statistics": zoning_simulation.get_statistics()
+        })
+
+@app.route("/api/zoning/control", methods=["POST"])
+def control_zoning_simulation():
+    """控制城市规划仿真。"""
+    global zoning_simulation, is_zoning_running, zoning_thread
+    
+    data = request.json or {}
+    action = data.get("action")
+    
+    print(f"[Zoning Control] 收到请求: {action}")
+    
+    if action == "start":
+        with zoning_lock:
+            if zoning_simulation is None:
+                zoning_simulation = create_zoning_simulation()
+                print("[Zoning Control] 创建新城市规划环境")
+            
+            if not is_zoning_running:
+                is_zoning_running = True
+                zoning_simulation.start()
+                print("[Zoning Control] 城市规划仿真已启动")
+                zoning_thread = threading.Thread(target=zoning_simulation_loop)
+                zoning_thread.daemon = True
+                zoning_thread.start()
+                print("[Zoning Control] 城市规划线程已启动")
+        return jsonify({"status": "started"})
+    
+    elif action == "pause":
+        with zoning_lock:
+            is_zoning_running = False
+            if zoning_simulation:
+                zoning_simulation.pause()
+        return jsonify({"status": "paused"})
+    
+    elif action == "reset":
+        with zoning_lock:
+            is_zoning_running = False
+            if zoning_simulation:
+                zoning_simulation.reset()
+            zoning_simulation = create_zoning_simulation()
+        return jsonify({"status": "reset"})
+    
+    return jsonify({"error": "未知操作"}), 400
+
+@app.route("/api/zoning/spawn", methods=["POST"])
+def spawn_zoning_vehicle():
+    """在城市规划模式中生成车辆。"""
+    with zoning_lock:
+        if zoning_simulation is None:
+            return jsonify({"error": "城市规划仿真未初始化"}), 400
+        
+        data = request.json or {}
+        
+        import random
+        all_nodes = list(zoning_simulation.road_network.nodes.values())
+        if len(all_nodes) < 2:
+            return jsonify({"error": "节点不足"}), 400
+        
+        start = random.choice(all_nodes)
+        available_ends = [n for n in all_nodes if n != start]
+        end = random.choice(available_ends)
+        
+        vtype_name = data.get("vehicle_type", "CAR")
+        vtype = VehicleType[vtype_name]
+        
+        vehicle = zoning_simulation.spawn_vehicle(start, end, vtype)
+        
+        if vehicle:
+            vehicle.use_llm = LLM_AVAILABLE
+            print(f"[城市规划-生成车辆] {vehicle.agent_id}")
+            return jsonify({
+                "vehicle_id": vehicle.agent_id,
+                "start": start.name,
+                "end": end.name,
+                "route_length": len(vehicle.route)
+            })
+        else:
+            return jsonify({"error": "生成车辆失败"}), 500
+
+# WebSocket事件处理
+@socketio.on("zoning_connect")
+def handle_zoning_connect():
+    """客户端连接城市规划模式。"""
+    print(f"[WebSocket] 城市规划客户端已连接: {request.sid}")
+    emit("zoning_connected", {"message": "城市规划模式连接成功"})
+
+@socketio.on("get_zoning_network")
+def handle_get_zoning_network():
+    """获取城市规划网络数据。"""
+    with zoning_lock:
+        if zoning_simulation:
+            emit("zoning_network_data", get_network_data(zoning_simulation))
+
+@socketio.on("get_zoning_zones")
+def handle_get_zoning_zones():
+    """获取功能区域数据。"""
+    with zoning_lock:
+        if zoning_simulation:
+            emit("zoning_zones_data", get_zoning_data(zoning_simulation))
+
+@socketio.on("zoning_spawn_vehicle")
+def handle_zoning_spawn_vehicle(data):
+    """在城市规划模式中生成车辆。"""
+    with zoning_lock:
+        if zoning_simulation is None:
+            emit("error", {"message": "城市规划仿真未运行"})
+            return
+        
+        import random
+        all_nodes = list(zoning_simulation.road_network.nodes.values())
+        if len(all_nodes) < 2:
+            emit("error", {"message": "节点不足"})
+            return
+        
+        start = random.choice(all_nodes)
+        available_ends = [n for n in all_nodes if n != start]
+        end = random.choice(available_ends)
+        
+        vtype_name = data.get("vehicle_type", "CAR")
+        vtype = VehicleType[vtype_name]
+        
+        vehicle = zoning_simulation.spawn_vehicle(start, end, vtype)
+        
+        if vehicle:
+            vehicle.use_llm = LLM_AVAILABLE
+            print(f"[城市规划-生成车辆] {vehicle.agent_id}")
+            emit("zoning_vehicle_spawned", {
+                "vehicle_id": vehicle.agent_id,
+                "start": start.name,
+                "end": end.name,
+                "route_length": len(vehicle.route)
+            })
+        else:
+            emit("error", {"message": "生成车辆失败"})
+
+# ========== 主入口 ==========
 
 if __name__ == "__main__":
     simulation = create_demo_simulation()
