@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from city.environment.road_network import RoadNetwork, Node, Edge, Lane
     from city.simulation.environment import SimulationEnvironment
     from city.llm.agent_llm_interface import AgentLLMInterface
+    from city.agents.memory import AgentMemory
 
 
 class AgentState(Enum):
@@ -55,7 +56,9 @@ class BaseAgent(ABC):
         self,
         agent_type: AgentType,
         environment: SimulationEnvironment | None = None,
-        use_llm: bool = False
+        use_llm: bool = False,
+        enable_memory: bool = True,
+        memory_capacity: int = 50
     ) -> None:
         BaseAgent._id_counter += 1
         self.agent_id = f"{agent_type.name.lower()}_{BaseAgent._id_counter}"
@@ -70,6 +73,11 @@ class BaseAgent(ABC):
         # 仿真相关
         self.creation_time = 0.0
         self.lifetime = 0.0
+        
+        # 记忆模块
+        self._memory: AgentMemory | None = None
+        self._enable_memory = enable_memory
+        self._memory_capacity = memory_capacity
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.agent_id}, state={self.state.name})"
@@ -181,3 +189,65 @@ class BaseAgent(ABC):
         if llm_interface:
             return llm_interface.get_llm_decision(perception)
         return None
+
+    # ==================== 记忆模块 ====================
+    
+    def get_memory(self) -> AgentMemory:
+        """
+        获取记忆模块（惰性初始化）。
+        
+        Returns:
+            AgentMemory 实例
+        """
+        if self._memory is None and self._enable_memory:
+            from city.agents.memory import AgentMemory
+            self._memory = AgentMemory(
+                agent=self,
+                short_term_capacity=self._memory_capacity,
+                enable_long_term=True,
+                auto_summarize=True
+            )
+        return self._memory
+    
+    def has_memory(self) -> bool:
+        """检查是否启用了记忆。"""
+        return self._enable_memory
+    
+    def has_memory_data(self) -> bool:
+        """检查是否已经生成可展示的记忆内容。"""
+        return (
+            self._enable_memory
+            and self._memory is not None
+            and getattr(self._memory, "_total_memories", 0) > 0
+        )
+
+    def record_perception(self, perception: dict[str, Any], importance: float = 3.0) -> None:
+        """记录感知到记忆。"""
+        if self._enable_memory:
+            self.get_memory().add_perception(perception, importance)
+    
+    def record_decision(self, decision: dict[str, Any], context: dict[str, Any] | None = None, importance: float = 5.0) -> None:
+        """记录决策到记忆。"""
+        if self._enable_memory:
+            self.get_memory().add_decision(decision, context, importance)
+    
+    def record_action(self, action: Any, result: Any | None = None, importance: float = 4.0) -> None:
+        """记录行动到记忆。"""
+        if self._enable_memory:
+            self.get_memory().add_action(action, result, importance)
+    
+    def record_event(self, event: str, details: dict[str, Any] | None = None, importance: float = 6.0) -> None:
+        """记录事件到记忆。"""
+        if self._enable_memory:
+            self.get_memory().add_event(event, details, importance)
+    
+    def get_memory_context(self, max_entries: int = 10) -> str:
+        """获取记忆上下文供LLM使用。"""
+        if self._enable_memory and self._memory:
+            return self._memory.get_context_for_llm(max_entries)
+        return ""
+    
+    def save_memory(self, filepath: str) -> None:
+        """保存记忆到文件。"""
+        if self._enable_memory and self._memory:
+            self._memory.save_to_file(filepath)

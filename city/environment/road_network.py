@@ -323,6 +323,55 @@ class RoadNetwork:
                 continue
             traffic_light.update(dt)
 
+    def has_edge_between(self, from_node: Node, to_node: Node) -> bool:
+        """
+        检查两个节点之间是否存在直接的边。
+        
+        Args:
+            from_node: 起始节点
+            to_node: 目标节点
+            
+        Returns:
+            如果存在从 from_node 到 to_node 的边返回 True
+        """
+        for edge in from_node.outgoing_edges:
+            if edge.to_node.node_id == to_node.node_id:
+                return True
+        return False
+
+    def remove_edge_between(self, from_node: Node, to_node: Node) -> bool:
+        """
+        移除两个节点之间的边。
+        
+        Args:
+            from_node: 起始节点
+            to_node: 目标节点
+            
+        Returns:
+            如果成功移除返回 True，如果边不存在返回 False
+        """
+        edge_to_remove = None
+        for edge in from_node.outgoing_edges:
+            if edge.to_node.node_id == to_node.node_id:
+                edge_to_remove = edge
+                break
+        
+        if edge_to_remove is None:
+            return False
+        
+        # 从起始节点的出边列表移除
+        from_node.outgoing_edges.remove(edge_to_remove)
+        
+        # 从目标节点的入边列表移除
+        if edge_to_remove in to_node.incoming_edges:
+            to_node.incoming_edges.remove(edge_to_remove)
+        
+        # 从网络的边字典中移除
+        if edge_to_remove.edge_id in self.edges:
+            del self.edges[edge_to_remove.edge_id]
+        
+        return True
+
     def find_shortest_path(self, start: Node, end: Node) -> list[Node] | None:
         """
         使用Dijkstra算法找到最短路径。

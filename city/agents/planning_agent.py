@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 from typing import TYPE_CHECKING, Any
 
@@ -50,9 +51,10 @@ class PopulationCityPlanner(BaseAgent):
         spawn_interval: float = 3.0,
         max_nodes: int = 25,
         min_edge_length: float = 200.0,
-        max_edge_length: float = 500.0
+        max_edge_length: float = 500.0,
+        enable_memory: bool = True
     ):
-        super().__init__(AgentType.TRAFFIC_PLANNER, environment, use_llm)
+        super().__init__(AgentType.TRAFFIC_PLANNER, environment, use_llm, enable_memory=enable_memory, memory_capacity=50)
         
         # 浜哄彛绠＄悊
         self.population_per_node = population_per_node
@@ -76,6 +78,7 @@ class PopulationCityPlanner(BaseAgent):
         # ????????????????????
         self.recent_expansion_directions: list[str] = []
         self.direction_window = 6
+        self._procedural_growth_config: dict[str, Any] | None = None
         
         # LLM鍐崇瓥璁板綍锛堢敤浜庡墠绔睍绀猴級
         self.last_decision: dict[str, Any] | None = None
@@ -176,6 +179,16 @@ class PopulationCityPlanner(BaseAgent):
         
         stats = self.get_city_stats()
         current_time = self.environment.current_time
+        self.record_perception(
+            {
+                'city_stats': stats,
+                'current_time': current_time,
+                'expansion_history_count': len(self.expansion_history),
+            },
+            importance=3.0
+        )
+        if self.has_memory():
+            self.get_memory().set_working_memory('latest_city_stats', stats)
         
         # 妫€鏌ュ喎鍗存椂闂?
         if current_time - self.last_expansion_time < self.expansion_cooldown:
@@ -190,6 +203,19 @@ class PopulationCityPlanner(BaseAgent):
             expansion_plan = self._plan_expansion()
             if expansion_plan:
                 self.last_decision = expansion_plan
+                self.record_decision(
+                    {
+                        'action': expansion_plan.get('action', 'expand_city'),
+                        'source': 'llm' if expansion_plan.get('is_llm') else 'rule',
+                        'expansion_direction': expansion_plan.get('expansion_direction', 'unknown'),
+                    },
+                    {
+                        'density': stats['density'],
+                        'reason': expansion_plan.get('reason', ''),
+                        'connect_to': expansion_plan.get('connect_to', []),
+                    },
+                    importance=6.0 if expansion_plan.get('is_llm') else 5.0
+                )
                 return expansion_plan
         
         return None
@@ -374,6 +400,173 @@ class PopulationCityPlanner(BaseAgent):
         if zoning_agent and hasattr(zoning_agent, 'zone_manager'):
             return list(zoning_agent.zone_manager.zones.values())
         return []
+
+    def _load_procedural_growth_config(self) -> dict[str, Any]:
+        """加载 procedural_city_generation 的 roadmap 参数。"""
+        if self._procedural_growth_config is not None:
+            return self._procedural_growth_config
+
+        default_conf: dict[str, Any] = {
+            "gridpForward": 100.0,
+            "gridpTurn": 9.0,
+            "gridlMin": 1.0,
+            "gridlMax": 1.0,
+            "organicpForward": 92.0,
+            "organicpTurn": 7.0,
+            "organiclMin": 0.8,
+            "organiclMax": 1.6,
+            "radialpForward": 100.0,
+            "radialpTurn": 10.0,
+            "radiallMin": 0.8,
+            "radiallMax": 1.5,
+        }
+
+        try:
+            conf_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                "procedural_city_generation-master",
+                "procedural_city_generation",
+                "inputs",
+                "roadmap.conf",
+            )
+            if os.path.exists(conf_path):
+                with open(conf_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                for k, v in raw.items():
+                    if isinstance(v, dict) and "value" in v:
+                        default_conf[k] = v["value"]
+                    else:
+                        default_conf[k] = v
+        except Exception as e:
+            print(f"[城市扩张] 读取 procedural roadmap.conf 失败，使用默认参数: {e}")
+
+        self._procedural_growth_config = default_conf
+        return default_conf
+
+    def _find_procedural_expansion_candidates(
+        self,
+        nodes_info: list[dict[str, Any]],
+        grid_size: float,
+        preferred_direction: str,
+    ) -> list[dict[str, Any]]:
+        """
+        参考 procedural_city_generation 的 grid/organic/radial growth 规则生成候选点。
+        """
+        if not nodes_info:
+            return []
+
+        conf = self._load_procedural_growth_config()
+        center_x = sum(n["x"] for n in nodes_info) / len(nodes_info)
+        center_y = sum(n["y"] for n in nodes_info) / len(nodes_info)
+        existing_positions = [(n["x"], n["y"]) for n in nodes_info]
+
+        leftmost_x = min(n["x"] for n in nodes_info)
+        rightmost_x = max(n["x"] for n in nodes_info)
+        topmost_y = min(n["y"] for n in nodes_info)
+        bottommost_y = max(n["y"] for n in nodes_info)
+        frontier_nodes = [
+            n for n in nodes_info
+            if abs(n["x"] - leftmost_x) < 12
+            or abs(n["x"] - rightmost_x) < 12
+            or abs(n["y"] - topmost_y) < 12
+            or abs(n["y"] - bottommost_y) < 12
+        ]
+        if not frontier_nodes:
+            frontier_nodes = nodes_info[:]
+
+        min_node_gap = max(self.min_edge_length * 0.7, grid_size * 0.55)
+        min_length = max(self.min_edge_length * 0.75, grid_size * 0.7)
+        max_length = max(self.max_edge_length * 0.9, grid_size * 1.25)
+
+        def _too_close(x: float, y: float) -> bool:
+            for ex, ey in existing_positions:
+                if math.hypot(x - ex, y - ey) < min_node_gap:
+                    return True
+            return False
+
+        def _direction_label(dx: float, dy: float) -> str:
+            if abs(dx) > abs(dy):
+                return "right" if dx >= 0 else "left"
+            return "down" if dy >= 0 else "up"
+
+        def _normalize(vx: float, vy: float) -> tuple[float, float]:
+            norm = math.hypot(vx, vy)
+            if norm < 1e-6:
+                return (1.0, 0.0)
+            return (vx / norm, vy / norm)
+
+        candidates: list[dict[str, Any]] = []
+
+        for anchor in frontier_nodes:
+            ax, ay = anchor["x"], anchor["y"]
+            vx, vy = _normalize(ax - center_x, ay - center_y)
+            if preferred_direction == "horizontal":
+                vx, vy = _normalize(vx + random.choice([-0.2, 0.2]), vy * 0.4)
+            elif preferred_direction == "vertical":
+                vx, vy = _normalize(vx * 0.4, vy + random.choice([-0.2, 0.2]))
+
+            # 1) grid 风格（正交、直线延展）
+            grid_len = random.uniform(
+                float(conf.get("gridlMin", 1.0)) * grid_size * 0.9,
+                float(conf.get("gridlMax", 1.0)) * grid_size * 1.05,
+            )
+            gx = ax + round(vx) * max(min_length, min(max_length, grid_len))
+            gy = ay + round(vy) * max(min_length, min(max_length, grid_len))
+            if not _too_close(gx, gy):
+                candidates.append({
+                    "x": gx,
+                    "y": gy,
+                    "direction": _direction_label(gx - ax, gy - ay),
+                    "anchor": anchor,
+                    "priority": 1 if preferred_direction in ("horizontal", "vertical") else 2,
+                    "type": "procedural_grid",
+                    "source": "procedural",
+                })
+
+            # 2) organic 风格（偏转 30~120 度）
+            organic_len = random.uniform(
+                float(conf.get("organiclMin", 0.8)) * grid_size * 0.85,
+                float(conf.get("organiclMax", 1.6)) * grid_size * 1.1,
+            )
+            turn = random.choice([-1, 1]) * random.uniform(30, 120)
+            rad = math.radians(turn)
+            ox = vx * math.cos(rad) - vy * math.sin(rad)
+            oy = vx * math.sin(rad) + vy * math.cos(rad)
+            ox, oy = _normalize(ox, oy)
+            oxp = ax + ox * max(min_length, min(max_length, organic_len))
+            oyp = ay + oy * max(min_length, min(max_length, organic_len))
+            if not _too_close(oxp, oyp):
+                candidates.append({
+                    "x": oxp,
+                    "y": oyp,
+                    "direction": _direction_label(oxp - ax, oyp - ay),
+                    "anchor": anchor,
+                    "priority": 2,
+                    "type": "procedural_organic",
+                    "source": "procedural",
+                })
+
+            # 3) radial 风格（向中心/离中心辐射）
+            radial_len = random.uniform(
+                float(conf.get("radiallMin", 0.8)) * grid_size * 0.85,
+                float(conf.get("radiallMax", 1.5)) * grid_size * 1.1,
+            )
+            rsign = random.choice([1.0, -1.0])
+            rx, ry = _normalize((ax - center_x) * rsign, (ay - center_y) * rsign)
+            rxp = ax + rx * max(min_length, min(max_length, radial_len))
+            ryp = ay + ry * max(min_length, min(max_length, radial_len))
+            if not _too_close(rxp, ryp):
+                candidates.append({
+                    "x": rxp,
+                    "y": ryp,
+                    "direction": _direction_label(rxp - ax, ryp - ay),
+                    "anchor": anchor,
+                    "priority": 2,
+                    "type": "procedural_radial",
+                    "source": "procedural",
+                })
+
+        return candidates
     
     def _find_expansion_candidates_with_zones(
         self, nodes_info: list, grid_size: float, preferred_direction: str
@@ -605,10 +798,25 @@ class PopulationCityPlanner(BaseAgent):
         candidates = self._find_expansion_candidates_with_zones(
             nodes_info, grid_size, preferred_direction
         )
+        candidates.extend(
+            self._find_procedural_expansion_candidates(
+                nodes_info=nodes_info,
+                grid_size=grid_size,
+                preferred_direction=preferred_direction,
+            )
+        )
         
         # 杩囨护鎺夊凡缁忓瓨鍦ㄧ殑鑺傜偣浣嶇疆
         existing_positions = {(n['x'], n['y']) for n in nodes_info}
         candidates = [c for c in candidates if (c['x'], c['y']) not in existing_positions]
+        # 去重（同坐标只保留更高优先级）
+        unique_candidates: dict[tuple[float, float], dict[str, Any]] = {}
+        for c in candidates:
+            key = (round(c["x"], 1), round(c["y"], 1))
+            old = unique_candidates.get(key)
+            if old is None or (c.get("priority", 9) < old.get("priority", 9)):
+                unique_candidates[key] = c
+        candidates = list(unique_candidates.values())
         
         # 鑾峰彇鍖哄煙鍒楄〃鐢ㄤ簬璺緞瑙勫垝
         zones = self._get_zones_for_expansion_planning()
@@ -634,7 +842,9 @@ class PopulationCityPlanner(BaseAgent):
 
             def _candidate_score(c):
                 dir_count = direction_counts.get(c['direction'], 0)
-                return (c['priority'], dir_count, c['anchor']['load'], random.random() * 0.01)
+                source_bonus = 0 if c.get("source") == "procedural" else 1
+                type_pref = 0 if c.get("type") == "procedural_grid" else 1
+                return (c['priority'], source_bonus, type_pref, dir_count, c['anchor']['load'], random.random() * 0.01)
 
             candidates.sort(key=_candidate_score)
             
@@ -644,6 +854,7 @@ class PopulationCityPlanner(BaseAgent):
             expansion_direction = best_candidate['direction']
             anchor_node = best_candidate['anchor']
             candidate_type = best_candidate.get('type', 'grid')
+        allow_non_orthogonal = candidate_type in {'procedural_organic', 'procedural_radial'}
         
         # 閫夋嫨杩炴帴鑺傜偣 - 杩炴帴鍒版墍鏈夊悎閫傜殑澶栧洿閭诲眳锛堝舰鎴愮綉鏍肩粨鏋勶級
         connect_to = []
@@ -682,7 +893,7 @@ class PopulationCityPlanner(BaseAgent):
                 is_orthogonal = min(dx, dy) < 50
                 is_near_diagonal = abs(dx - dy) < 80 and max(dx, dy) <= grid_size * 1.35
 
-                if not is_orthogonal and not is_near_diagonal:
+                if not allow_non_orthogonal and not is_orthogonal and not is_near_diagonal:
                     continue
                 
                 # 娣诲姞鍒拌繛鎺ュ垪琛?
@@ -718,6 +929,9 @@ class PopulationCityPlanner(BaseAgent):
 
             if not connect_to and anchor_node:
                 connect_to.append(anchor_node['id'])
+
+        # 去重并限制连接数，避免一次扩张产生过多边
+        connect_to = list(dict.fromkeys(connect_to))[:4]
         
         return {
             'action': 'expand_city',
@@ -725,9 +939,9 @@ class PopulationCityPlanner(BaseAgent):
             'connect_to': connect_to,
             'path_waypoints': path_waypoints,  # 瀛樺偍璺緞鐐逛俊鎭?
             'expansion_direction': expansion_direction,
-            'connect_reason': f'方正网格布局: 向{expansion_direction}扩展, 新节点类型: {candidate_type}',
-            'shape_consideration': f'保持正交网格布局，沿区域边缘连接，道路间距约 {grid_size:.0f}m',
-            'reason': f'规则规划: 人口密度达到{self.get_population_density()*100:.0f}%, 执行网格化扩展',
+            'connect_reason': f'融合 procedural growth: 向{expansion_direction}扩展, 候选类型: {candidate_type}',
+            'shape_consideration': f'融合 grid/organic/radial 规则，优先外圈增长并保持道路连通，道路间距约 {grid_size:.0f}m',
+            'reason': f'规则规划(融合 procedural): 人口密度达到{self.get_population_density()*100:.0f}%',
             'is_llm': False,
             'candidate_type': candidate_type
         }
@@ -901,6 +1115,140 @@ class PopulationCityPlanner(BaseAgent):
         dist_b_mid_to_a = self._point_to_segment_distance((b1x + b2x) / 2, (b1y + b2y) / 2, a1x, a1y, a2x, a2y)
         return min(dist_a_mid_to_b, dist_b_mid_to_a) < min_parallel_gap
 
+    def _has_direct_connection(self, node1: Node, node2: Node) -> bool:
+        """Check whether two nodes already have at least one direct edge."""
+        for edge in node1.outgoing_edges:
+            if edge.to_node == node2:
+                return True
+        for edge in node1.incoming_edges:
+            if edge.from_node == node2:
+                return True
+        return False
+
+    def _line_intersection_params(
+        self,
+        a1x: float, a1y: float, a2x: float, a2y: float,
+        b1x: float, b1y: float, b2x: float, b2y: float
+    ) -> tuple[float, float] | None:
+        """
+        Return (t, u) for intersection of lines:
+        A(t)=A1+t*(A2-A1), B(u)=B1+u*(B2-B1).
+        """
+        dax = a2x - a1x
+        day = a2y - a1y
+        dbx = b2x - b1x
+        dby = b2y - b1y
+        denom = dax * dby - day * dbx
+        if abs(denom) < 1e-8:
+            return None
+        rx = b1x - a1x
+        ry = b1y - a1y
+        t = (rx * dby - ry * dbx) / denom
+        u = (rx * day - ry * dax) / denom
+        return (t, u)
+
+    def _find_existing_node_near(self, x: float, y: float, radius: float = 28.0) -> Node | None:
+        """Find an existing node near a given coordinate."""
+        if not self.environment:
+            return None
+        best = None
+        best_d = float("inf")
+        p = Vector2D(x, y)
+        for node in self.environment.road_network.nodes.values():
+            d = p.distance_to(node.position)
+            if d < radius and d < best_d:
+                best = node
+                best_d = d
+        return best
+
+    def _ensure_intersection_node_connected(self, inter_node: Node, host_edge: Edge) -> None:
+        """Connect intersection node to both endpoints of the host edge."""
+        if not self.environment:
+            return
+        for endpoint in (host_edge.from_node, host_edge.to_node):
+            if inter_node.node_id == endpoint.node_id:
+                continue
+            if self._has_direct_connection(inter_node, endpoint):
+                continue
+            if self.environment.can_connect_nodes(
+                inter_node,
+                endpoint,
+                max_distance=max(self.max_edge_length * 1.25, 650.0)
+            ):
+                self.environment.add_edge_dynamically(
+                    from_node=inter_node,
+                    to_node=endpoint,
+                    num_lanes=2,
+                    bidirectional=True
+                )
+
+    def _adjust_target_node_with_vertex_checks(self, from_node: Node, to_node: Node) -> tuple[Node, str | None]:
+        """
+        Apply procedural-style vertex checks before adding edge:
+        1) snap to near existing vertex
+        2) extend edge to nearby host-edge intersection
+        3) shorten edge to first intersection with host edge
+        """
+        if not self.environment:
+            return to_node, None
+
+        x1, y1 = from_node.position.x, from_node.position.y
+        x2, y2 = to_node.position.x, to_node.position.y
+
+        # Case 1: new vertex too close to an existing vertex -> snap to that vertex.
+        snap_node = self._find_existing_node_near(x2, y2, radius=38.0)
+        if snap_node and snap_node.node_id not in {from_node.node_id, to_node.node_id}:
+            return snap_node, "snap_to_near_vertex"
+
+        best_shorten: tuple[float, float, float, Edge] | None = None
+        best_extend: tuple[float, float, float, Edge] | None = None
+
+        for edge in self._iter_unique_edges():
+            a = edge.from_node
+            b = edge.to_node
+            if from_node.node_id in {a.node_id, b.node_id}:
+                continue
+            ex1, ey1 = a.position.x, a.position.y
+            ex2, ey2 = b.position.x, b.position.y
+
+            params = self._line_intersection_params(x1, y1, x2, y2, ex1, ey1, ex2, ey2)
+            if params is None:
+                continue
+            t, u = params
+            ix = x1 + (x2 - x1) * t
+            iy = y1 + (y2 - y1) * t
+            dist_from_start = math.hypot(ix - x1, iy - y1)
+
+            # Case 3: candidate intersects an existing edge -> shorten to intersection.
+            if 1e-3 < t < 0.999 and -1e-3 <= u <= 1.001:
+                if best_shorten is None or dist_from_start < best_shorten[0]:
+                    best_shorten = (dist_from_start, ix, iy, edge)
+                continue
+
+            # Case 2: candidate stops shortly before host edge -> extend to intersection.
+            end_to_edge = self._point_to_segment_distance(x2, y2, ex1, ey1, ex2, ey2)
+            if 1.0 < t <= 1.35 and -1e-3 <= u <= 1.001 and end_to_edge <= 36.0:
+                if best_extend is None or dist_from_start < best_extend[0]:
+                    best_extend = (dist_from_start, ix, iy, edge)
+
+        chosen = best_shorten if best_shorten is not None else best_extend
+        if chosen is None:
+            return to_node, None
+
+        _, ix, iy, host_edge = chosen
+        near_node = self._find_existing_node_near(ix, iy, radius=22.0)
+        if near_node:
+            return near_node, "snap_to_intersection_near_vertex"
+
+        inter_node = self.environment.add_node_dynamically(
+            position=Vector2D(ix, iy),
+            name=f"inter_{len(self.expansion_history)+1}"
+        )
+        self._ensure_intersection_node_connected(inter_node, host_edge)
+        if best_shorten is not None:
+            return inter_node, "shorten_to_intersection"
+        return inter_node, "extend_to_intersection"
+
     def _would_overlap_existing_roads(self, from_node: Node, to_node: Node) -> bool:
         """Validate whether a new road segment would overlap/cross existing roads."""
         if not self.environment:
@@ -927,6 +1275,11 @@ class PopulationCityPlanner(BaseAgent):
             ex2, ey2 = b.position.x, b.position.y
 
             if self._segments_intersect_strict(x1, y1, x2, y2, ex1, ey1, ex2, ey2):
+                # Allow touching host edge exactly at candidate endpoint when
+                # endpoint is already connected to host edge endpoints.
+                endpoint_touch = self._point_to_segment_distance(x2, y2, ex1, ey1, ex2, ey2) <= 1.0
+                if endpoint_touch and self._has_direct_connection(to_node, a) and self._has_direct_connection(to_node, b):
+                    continue
                 return True
 
             if self._segments_nearly_parallel_and_overlapping(x1, y1, x2, y2, ex1, ey1, ex2, ey2):
@@ -938,6 +1291,13 @@ class PopulationCityPlanner(BaseAgent):
         """Add edge with geometric overlap guards."""
         if not self.environment:
             return None
+
+        adjusted_to_node, adjust_reason = self._adjust_target_node_with_vertex_checks(from_node, to_node)
+        if adjusted_to_node.node_id != to_node.node_id:
+            to_node = adjusted_to_node
+            if adjust_reason:
+                print(f"[城市扩张] 顶点检查命中: {adjust_reason}, 终点调整为 {to_node.node_id}")
+
         if not self.environment.can_connect_nodes(
             from_node, to_node, max_distance=max(self.max_edge_length * 1.25, 650.0)
         ):
@@ -952,13 +1312,199 @@ class PopulationCityPlanner(BaseAgent):
             bidirectional=bidirectional
         )
     
+    def _expand_with_growth(self, expansion_size: str = "medium") -> bool:
+        """
+        使用真正仿 procedural_city_generation 的方式扩展城市路网。
+        
+        核心机制：
+        1. Vertex + neighbours 图结构
+        2. Front (生长前沿) 迭代生长
+        3. Check 函数处理相交、吸附、创建交叉口
+        4. Seed + vertex_queue 支路生成机制
+        5. KDTree 空间查询加速
+        
+        Args:
+            expansion_size: 扩展规模 (small/medium/large)
+            
+        Returns:
+            是否成功扩展
+        """
+        if not self.environment:
+            return False
+        
+        try:
+            from city.environment.procedural_roadmap import (
+                expand_with_procedural_roadmap,
+                ProceduralRoadmapGenerator,
+                ProceduralConfig
+            )
+            
+            print(f"\n{'='*60}")
+            print(f"[城市扩张] 启动真正 Procedural 扩展 (规模: {expansion_size})")
+            print(f"{'='*60}")
+            
+            # 根据规模选择配置
+            configs = {
+                "small": {"iterations": 2, "description": "小幅扩展"},
+                "medium": {"iterations": 3, "description": "中等扩展"},
+                "large": {"iterations": 5, "description": "大幅扩展"}
+            }
+            config = configs.get(expansion_size, configs["medium"])
+            
+            # 记录扩展前状态
+            nodes_before = len(self.environment.road_network.nodes)
+            edges_before = len(self.environment.road_network.edges)
+            
+            # 执行生长扩展
+            num_new = expand_with_procedural_roadmap(
+                self.environment,
+                num_iterations=config["iterations"]
+            )
+            
+            # 记录扩展结果
+            nodes_after = len(self.environment.road_network.nodes)
+            edges_after = len(self.environment.road_network.edges)
+            
+            if num_new > 0:
+                self.last_expansion_time = self.environment.current_time
+                
+                # 记录扩展历史
+                expansion_record = {
+                    'time': self.environment.current_time,
+                    'method': 'procedural_roadmap_v2',
+                    'size': expansion_size,
+                    'description': config["description"],
+                    'nodes_added': num_new,
+                    'nodes_before': nodes_before,
+                    'nodes_after': nodes_after,
+                    'edges_before': edges_before,
+                    'edges_after': edges_after
+                }
+                self.expansion_history.append(expansion_record)
+                
+                print(f"[城市扩张] 完成! 新增 {num_new} 个节点, "
+                      f"{edges_after - edges_before} 条边")
+                print(f"  当前路网: {nodes_after} 节点, {edges_after} 边")
+                
+                # 为新节点添加红绿灯
+                new_nodes = list(self.environment.road_network.nodes.values())[-num_new:]
+                self._add_traffic_lights_to_new_nodes(new_nodes)
+                
+                return True
+            else:
+                print("[城市扩张] 没有生成新节点")
+                return False
+                
+        except Exception as e:
+            print(f"[城市扩张] 生长扩展失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _add_traffic_lights_to_new_nodes(self, nodes: list) -> None:
+        """为新节点中的交叉口添加红绿灯。"""
+        if not self.environment:
+            return
+        
+        from city.environment.road_network import TrafficLight
+        from city.agents.traffic_light_agent import TrafficLightAgent
+        
+        count = 0
+        for node in nodes:
+            # 如果是交叉口（连接数 >= 3）
+            total_connections = len(node.incoming_edges) + len(node.outgoing_edges)
+            if total_connections >= 3 and not node.traffic_light:
+                node.is_intersection = True
+                node.traffic_light = TrafficLight(
+                    node, cycle_time=60, green_duration=25, yellow_duration=5
+                )
+                
+                tl_agent = TrafficLightAgent(
+                    control_node=node,
+                    environment=self.environment,
+                    use_llm=self.use_llm,
+                    name=f"红绿灯_{node.node_id}",
+                    enable_memory=self.use_llm
+                )
+                tl_agent.activate()
+                self.environment.add_agent(tl_agent)
+                count += 1
+        
+        if count > 0:
+            print(f"[城市扩张] 为 {count} 个交叉口添加了红绿灯")
+    
     def act(self, decision: dict[str, Any] | None) -> bool:
-        """鎵ц鍩庡競鎵╁紶锛屾敮鎸佹姌绾胯矾寰勶紙缁曡繃鍔熻兘鍖哄煙锛夈€"""
+        """
+        执行城市扩展。
+        
+        优先使用生长式扩展（多分支、自然生长），
+        回退到传统单节点扩展。
+        """
         if not decision or not self.environment:
             return False
         
         action = decision.get('action')
         if action != 'expand_city':
+            return False
+        
+        self.record_action(
+            'expand_city',
+            {
+                'source': 'llm' if decision.get('is_llm') else 'rule',
+                'direction': decision.get('expansion_direction', 'unknown'),
+            },
+            importance=5.0
+        )
+        
+        # 优先使用生长式扩展
+        try:
+            # 根据城市规模选择扩展大小
+            current_nodes = len(self.environment.road_network.nodes)
+            if current_nodes < 8:
+                expansion_size = "small"
+            elif current_nodes < 15:
+                expansion_size = "medium"
+            else:
+                expansion_size = "large"
+            
+            # 尝试生长式扩展
+            success = self._expand_with_growth(expansion_size)
+            if success:
+                self.record_event(
+                    '路网扩展成功',
+                    {
+                        'mode': 'growth',
+                        'expansion_size': expansion_size,
+                        'nodes': len(self.environment.road_network.nodes),
+                        'edges': len(self.environment.road_network.edges),
+                    },
+                    importance=7.0
+                )
+                return True
+            
+            print("[城市扩张] 生长式扩展未生成节点，回退到传统扩展")
+            
+        except Exception as e:
+            print(f"[城市扩张] 生长式扩展异常: {e}，回退到传统扩展")
+        
+        # 回退到传统单节点扩展
+        success = self._act_traditional(decision)
+        if success:
+            self.record_event(
+                '路网扩展成功',
+                {
+                    'mode': 'traditional',
+                    'direction': decision.get('expansion_direction', 'unknown'),
+                    'nodes': len(self.environment.road_network.nodes),
+                    'edges': len(self.environment.road_network.edges),
+                },
+                importance=7.0
+            )
+        return success
+    
+    def _act_traditional(self, decision: dict[str, Any] | None) -> bool:
+        """传统的单节点扩展方式（作为回退）。"""
+        if not decision or not self.environment:
             return False
         
         try:
@@ -1123,7 +1669,7 @@ class PopulationCityPlanner(BaseAgent):
                         is_orthogonal = min(dx, dy) < 50
                         is_near_diagonal = abs(dx - dy) < 80 and max(dx, dy) <= self.max_edge_length
                         
-                        if not is_orthogonal and not is_near_diagonal:
+                        if not allow_non_orthogonal and not is_orthogonal and not is_near_diagonal:
                             continue  # 璺宠繃瀵硅绾胯妭鐐?
                         
                         # 妫€鏌ョ洿鎺ヨ繛鎺ユ槸鍚︿細绌胯繃鍖哄煙

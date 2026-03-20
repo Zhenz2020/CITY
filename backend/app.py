@@ -5,6 +5,8 @@ CITY 交通仿真后端 API 服务。
 import sys
 import os
 import json
+import math
+import random
 import threading
 import time
 import queue
@@ -18,10 +20,17 @@ from flask_socketio import SocketIO, emit
 
 from city.simulation.environment import SimulationEnvironment, SimulationConfig
 from city.environment.road_network import RoadNetwork, Node, TrafficLight
+from city.environment.initial_network import (
+    create_cross_network,
+    create_grid_network,
+    create_radial_network,
+)
 from city.agents.vehicle import Vehicle, VehicleType
 from city.agents.pedestrian import Pedestrian
 from city.agents.traffic_manager import TrafficManager
 from city.agents.traffic_light_agent import TrafficLightAgent
+from city.agents.planning_agent import PlanningAgent
+from city.agents.zoning_agent import ZoningAgent
 from city.utils.vector import Vector2D
 
 # 加载 LLM 配置 - 支持多API Key
@@ -59,7 +68,12 @@ except Exception as e:
 
 app = Flask(__name__)
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode='threading',
+    allow_upgrades=False,
+)
 
 # 全局状态
 simulation: SimulationEnvironment | None = None
@@ -70,7 +84,7 @@ lock = threading.Lock()
 # LLM 决策队列
 llm_decision_queue = queue.Queue()
 
-def create_demo_simulation() -> SimulationEnvironment:
+def create_demo_simulation(agent_configs: dict | None = None) -> SimulationEnvironment:
     """创建演示仿真环境 - 修复版：更大网络、更多红绿灯、正确车道显示。"""
     network = RoadNetwork("demo_grid_large")
     nodes: dict[tuple[int, int], Node] = {}
@@ -122,6 +136,15 @@ def create_demo_simulation() -> SimulationEnvironment:
     
     config = SimulationConfig(time_step=0.2, max_simulation_time=3600.0, real_time_factor=1.0)
     env = SimulationEnvironment(network, config)
+    configs = {
+        'vehicle': True,
+        'traffic_light': True,
+        'road_planning': True,
+        'zoning': True,
+    }
+    if agent_configs:
+        configs.update(agent_configs)
+    env.agent_configs = configs
     
     # 4. 为所有交叉口添加智能红绿灯智能体
     for i in range(1, GRID_SIZE - 1):
@@ -131,7 +154,8 @@ def create_demo_simulation() -> SimulationEnvironment:
                 traffic_light_agent = TrafficLightAgent(
                     control_node=intersection_node,
                     environment=env,
-                    use_llm=LLM_AVAILABLE,
+                    use_llm=configs.get('traffic_light', True) and LLM_AVAILABLE,
+                    enable_memory=bool(configs.get('traffic_light', True)),
                     name=f"红绿灯_{i}_{j}"
                 )
                 traffic_light_agent.activate()
@@ -181,6 +205,20 @@ def create_demo_simulation() -> SimulationEnvironment:
             print(f"[初始车辆] {vehicle.agent_id}: {start.name} -> {end.name} (距离{distance:.0f}m, LLM={'启用' if LLM_AVAILABLE else '禁用'})")
     
     return env
+
+def _get_memory_agent_kind(agent: Any) -> str:
+    """将后端智能体映射为前端记忆面板使用的类型。"""
+    if isinstance(agent, Vehicle):
+        return "vehicle"
+    if isinstance(agent, TrafficLightAgent):
+        return "traffic_light"
+    if isinstance(agent, ZoningAgent):
+        return "zoning"
+    if isinstance(agent, PlanningAgent):
+        return "planning"
+    if isinstance(agent, Pedestrian):
+        return "pedestrian"
+    return agent.agent_type.name.lower() if hasattr(agent.agent_type, "name") else type(agent).__name__.lower()
 
 def get_network_data(env: SimulationEnvironment) -> dict:
     network = env.road_network
@@ -393,13 +431,13 @@ def simulation_loop():
                             except:
                                 pass
             
-            time.sleep(0.05)
+            socketio.sleep(0.05)
             
         except Exception as e:
             print(f"[仿真循环错误] {e}")
             import traceback
             traceback.print_exc()
-            time.sleep(0.1)
+            socketio.sleep(0.1)
     
     print("[仿真循环] 结束")
 
@@ -431,13 +469,25 @@ def control_simulation():
     
     data = request.json or {}
     action = data.get("action")
+    agent_configs = data.get("agent_configs", {
+        'vehicle': True,
+        'traffic_light': True,
+        'road_planning': True,
+        'zoning': True,
+    })
+    agent_configs = data.get("agent_configs", {
+        'vehicle': True,
+        'traffic_light': True,
+        'road_planning': True,
+        'zoning': True,
+    })
     
     print(f"[Control] 收到请求: {action}")
     
     if action == "start":
         with lock:
             if simulation is None:
-                simulation = create_demo_simulation()
+                simulation = create_demo_simulation(agent_configs)
                 print("[Control] 创建新仿真环境")
             
             if not is_running:
@@ -448,7 +498,7 @@ def control_simulation():
                 simulation_thread.daemon = True
                 simulation_thread.start()
                 print("[Control] 仿真线程已启动")
-        return jsonify({"status": "started"})
+        return jsonify({"status": "started", "agent_configs": agent_configs})
     
     elif action == "pause":
         with lock:
@@ -462,8 +512,8 @@ def control_simulation():
             is_running = False
             if simulation:
                 simulation.reset()
-            simulation = create_demo_simulation()
-        return jsonify({"status": "reset"})
+            simulation = create_demo_simulation(agent_configs)
+        return jsonify({"status": "reset", "agent_configs": agent_configs})
     
     return jsonify({"error": "未知操作"}), 400
 
@@ -583,8 +633,490 @@ planning_thread: threading.Thread | None = None
 is_planning_running = False
 planning_lock = threading.Lock()
 
+def _build_default_planning_grid() -> RoadNetwork:
+    """构建默认 2x2 初始路网。"""
+    network = RoadNetwork("planning_grid")
+    nodes: dict[tuple[int, int], Node] = {}
+    grid_size = 2
+    node_spacing = 300.0
+
+    for i in range(grid_size):
+        for j in range(grid_size):
+            pos = Vector2D(j * node_spacing, i * node_spacing)
+            node = Node(position=pos, name=f"node_{i}_{j}")
+            network.add_node(node)
+            nodes[(i, j)] = node
+
+    for i in range(grid_size):
+        for j in range(grid_size):
+            current = nodes[(i, j)]
+            if j + 1 < grid_size:
+                right = nodes[(i, j + 1)]
+                network.create_edge(current, right, num_lanes=2, bidirectional=True)
+            if i + 1 < grid_size:
+                down = nodes[(i + 1, j)]
+                network.create_edge(current, down, num_lanes=2, bidirectional=True)
+
+    return network
+
+def _load_procedural_roadmap_conf() -> dict[str, Any] | None:
+    """读取 procedural_city_generation 的 roadmap 配置。"""
+    conf_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "procedural_city_generation-master",
+        "procedural_city_generation",
+        "inputs",
+        "roadmap.conf",
+    )
+    if not os.path.exists(conf_path):
+        return None
+
+    try:
+        with open(conf_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        parsed: dict[str, Any] = {}
+        for key, value in raw.items():
+            if isinstance(value, dict) and "value" in value:
+                parsed[key] = value["value"]
+            else:
+                parsed[key] = value
+        return parsed
+    except Exception as e:
+        print(f"[城市诞生] 读取 procedural 配置失败: {e}")
+        return None
+
+def _build_procedural_birth_network(configs: dict[str, Any]) -> RoadNetwork:
+    """?? procedural ?????????????????"""
+    conf = _load_procedural_roadmap_conf() or {}
+    seed = int(configs.get("city_birth_seed", 42))
+    rng = random.Random(seed)
+
+    border_x = float(conf.get("border_x", 18))
+    border_y = float(conf.get("border_y", 18))
+    scale = float(configs.get("city_birth_scale", 120.0))
+    target_nodes = max(8, min(40, int(configs.get("city_birth_nodes", 18))))
+
+    min_distance = float(conf.get("min_distance", 0.6)) * scale
+    grid_l = max(80.0, float(conf.get("gridlMin", 1.0)) * scale)
+    organic_l = max(grid_l, float(conf.get("organiclMax", 1.6)) * scale)
+    min_edge = float(configs.get("city_birth_min_edge", max(120.0, grid_l * 0.9)))
+    max_edge = float(configs.get("city_birth_max_edge", max(420.0, organic_l * 1.35)))
+
+    max_x = border_x * scale
+    max_y = border_y * scale
+
+    def normalize(vx: float, vy: float) -> tuple[float, float]:
+        n = math.hypot(vx, vy)
+        if n < 1e-6:
+            return (1.0, 0.0)
+        return (vx / n, vy / n)
+
+    def rotate(vx: float, vy: float, deg: float) -> tuple[float, float]:
+        rad = math.radians(deg)
+        c = math.cos(rad)
+        s = math.sin(rad)
+        return (vx * c - vy * s, vx * s + vy * c)
+
+    points: list[tuple[float, float]] = [(0.0, 0.0)]
+    growth_edges: set[tuple[int, int]] = set()
+    fronts: list[tuple[int, int, str]] = []
+
+    axiom = conf.get("axiom") or [[2, 0], [3, 0], [0, 2], [0, 3], [-2, 0], [-3, 0], [0, -2], [0, -3]]
+    max_seed_spokes = max(4, min(8, int(configs.get("city_birth_seed_spokes", 6))))
+    seed_added = 0
+    for idx, item in enumerate(axiom):
+        if seed_added >= max_seed_spokes:
+            break
+        try:
+            x = float(item[0]) * scale
+            y = float(item[1]) * scale
+        except Exception:
+            continue
+        if abs(x) > max_x or abs(y) > max_y:
+            continue
+        points.append((x, y))
+        pid = len(points) - 1
+        growth_edges.add((0, pid) if 0 < pid else (pid, 0))
+        seed_added += 1
+        if idx % 3 == 0:
+            fronts.append((0, pid, "grid"))
+        elif idx % 3 == 1:
+            fronts.append((0, pid, "organic"))
+        else:
+            fronts.append((0, pid, "radial"))
+
+    if len(points) < 3:
+        points.extend([(grid_l, 0.0), (0.0, grid_l)])
+        growth_edges.add((0, 1))
+        growth_edges.add((0, 2))
+        fronts.append((0, 1, "grid"))
+        fronts.append((0, 2, "grid"))
+
+    def too_close(nx: float, ny: float) -> bool:
+        for px, py in points:
+            if math.hypot(nx - px, ny - py) < min_distance:
+                return True
+        return False
+
+    attempts = 0
+    max_attempts = target_nodes * 160
+    while len(points) < target_nodes and fronts and attempts < max_attempts:
+        attempts += 1
+        fi = rng.randrange(len(fronts))
+        prev_idx, curr_idx, rule = fronts[fi]
+        px, py = points[prev_idx]
+        cx, cy = points[curr_idx]
+        vx, vy = normalize(cx - px, cy - py)
+
+        candidates: list[tuple[float, float, str]] = []
+        if rule == "grid":
+            step = rng.uniform(grid_l * 0.95, grid_l * 1.08)
+            candidates.append((cx + vx * step, cy + vy * step, "grid"))
+            if rng.random() < float(conf.get("gridpTurn", 9.0)) / 100.0:
+                tx, ty = rotate(vx, vy, rng.choice([90.0, -90.0]))
+                candidates.append((cx + tx * step, cy + ty * step, "organic"))
+        elif rule == "organic":
+            step = rng.uniform(grid_l * 0.9, organic_l)
+            fx, fy = rotate(vx, vy, rng.uniform(-30.0, 30.0))
+            candidates.append((cx + fx * step, cy + fy * step, "organic"))
+            if rng.random() < float(conf.get("organicpTurn", 7.0)) / 100.0:
+                tx, ty = rotate(vx, vy, rng.choice([rng.uniform(60, 120), rng.uniform(-120, -60)]))
+                candidates.append((cx + tx * step, cy + ty * step, "grid"))
+        else:
+            ox, oy = normalize(cx, cy)
+            step = rng.uniform(grid_l * 0.9, organic_l * 0.95)
+            rx, ry = rotate(ox, oy, rng.uniform(-25.0, 25.0))
+            candidates.append((cx + rx * step, cy + ry * step, "radial"))
+
+        added_any = False
+        for nx, ny, nrule in candidates:
+            if abs(nx) > max_x or abs(ny) > max_y:
+                continue
+            if too_close(nx, ny):
+                continue
+            points.append((nx, ny))
+            nid = len(points) - 1
+            a, b = (curr_idx, nid) if curr_idx < nid else (nid, curr_idx)
+            growth_edges.add((a, b))
+            fronts.append((curr_idx, nid, nrule))
+            added_any = True
+            if len(points) >= target_nodes:
+                break
+
+        if not added_any and rng.random() < 0.55:
+            fronts.pop(fi)
+
+    margin = 180.0
+    min_px = min(p[0] for p in points)
+    min_py = min(p[1] for p in points)
+    points = [(x - min_px + margin, y - min_py + margin) for x, y in points]
+
+    network = RoadNetwork("planning_procedural_birth")
+    nodes: list[Node] = []
+    for idx, (x, y) in enumerate(points):
+        node = Node(position=Vector2D(x, y), name=f"birth_node_{idx}")
+        network.add_node(node)
+        nodes.append(node)
+
+    added_pairs: set[tuple[int, int]] = set()
+    degree: dict[int, int] = {i: 0 for i in range(len(nodes))}
+
+    def orientation(ax: float, ay: float, bx: float, by: float, cx: float, cy: float) -> float:
+        return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+    def on_segment(ax: float, ay: float, bx: float, by: float, cx: float, cy: float) -> bool:
+        return min(ax, bx) - 1e-6 <= cx <= max(ax, bx) + 1e-6 and min(ay, by) - 1e-6 <= cy <= max(ay, by) + 1e-6
+
+    def segments_intersect(a1, a2, b1, b2) -> bool:
+        o1 = orientation(a1[0], a1[1], a2[0], a2[1], b1[0], b1[1])
+        o2 = orientation(a1[0], a1[1], a2[0], a2[1], b2[0], b2[1])
+        o3 = orientation(b1[0], b1[1], b2[0], b2[1], a1[0], a1[1])
+        o4 = orientation(b1[0], b1[1], b2[0], b2[1], a2[0], a2[1])
+
+        if (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0):
+            return True
+        if abs(o1) <= 1e-6 and on_segment(a1[0], a1[1], a2[0], a2[1], b1[0], b1[1]):
+            return True
+        if abs(o2) <= 1e-6 and on_segment(a1[0], a1[1], a2[0], a2[1], b2[0], b2[1]):
+            return True
+        if abs(o3) <= 1e-6 and on_segment(b1[0], b1[1], b2[0], b2[1], a1[0], a1[1]):
+            return True
+        if abs(o4) <= 1e-6 and on_segment(b1[0], b1[1], b2[0], b2[1], a2[0], a2[1]):
+            return True
+        return False
+
+    def would_cross_existing(i: int, j: int) -> bool:
+        p1 = (nodes[i].position.x, nodes[i].position.y)
+        p2 = (nodes[j].position.x, nodes[j].position.y)
+        for a, b in added_pairs:
+            if len({i, j, a, b}) < 4:
+                continue
+            q1 = (nodes[a].position.x, nodes[a].position.y)
+            q2 = (nodes[b].position.x, nodes[b].position.y)
+            if segments_intersect(p1, p2, q1, q2):
+                return True
+        return False
+
+    def add_undirected(i: int, j: int, strict_degree: bool = True, allow_cross: bool = False) -> bool:
+        if i == j:
+            return False
+        a, b = (i, j) if i < j else (j, i)
+        if (a, b) in added_pairs:
+            return False
+        dist = nodes[a].position.distance_to(nodes[b].position)
+        if dist < min_edge or dist > max_edge:
+            return False
+        if strict_degree and (degree[a] >= 4 or degree[b] >= 4):
+            return False
+        if not allow_cross and would_cross_existing(a, b):
+            return False
+
+        network.create_edge(nodes[a], nodes[b], num_lanes=2, bidirectional=True)
+        added_pairs.add((a, b))
+        degree[a] += 1
+        degree[b] += 1
+        return True
+
+    for a, b in sorted(growth_edges, key=lambda e: nodes[e[0]].position.distance_to(nodes[e[1]].position)):
+        add_undirected(a, b, strict_degree=True, allow_cross=False)
+
+    loop_budget = max(2, int(target_nodes * 0.35))
+    added_loops = 0
+    for i in range(len(nodes)):
+        if added_loops >= loop_budget:
+            break
+        dists: list[tuple[float, int]] = []
+        for j in range(len(nodes)):
+            if i == j:
+                continue
+            d = nodes[i].position.distance_to(nodes[j].position)
+            if min_edge <= d <= max_edge:
+                dists.append((d, j))
+        dists.sort(key=lambda x: x[0])
+        for _, j in dists[:4]:
+            if added_loops >= loop_budget:
+                break
+            if rng.random() < 0.35 and add_undirected(i, j, strict_degree=True, allow_cross=False):
+                added_loops += 1
+
+    def get_components() -> list[set[int]]:
+        adj: dict[int, set[int]] = {i: set() for i in range(len(nodes))}
+        for a, b in added_pairs:
+            adj[a].add(b)
+            adj[b].add(a)
+        comps: list[set[int]] = []
+        visited: set[int] = set()
+        for i in range(len(nodes)):
+            if i in visited:
+                continue
+            stack = [i]
+            visited.add(i)
+            comp: set[int] = set()
+            while stack:
+                cur = stack.pop()
+                comp.add(cur)
+                for nxt in adj[cur]:
+                    if nxt not in visited:
+                        visited.add(nxt)
+                        stack.append(nxt)
+            comps.append(comp)
+        return comps
+
+    def try_connect_node_to_targets(
+        source: int,
+        targets: list[int],
+        max_dist_scale: float = 1.0,
+    ) -> bool:
+        candidate_pairs: list[tuple[float, int]] = []
+        for target in targets:
+            if target == source:
+                continue
+            dist = nodes[source].position.distance_to(nodes[target].position)
+            if dist <= max_edge * max_dist_scale:
+                candidate_pairs.append((dist, target))
+        candidate_pairs.sort(key=lambda item: item[0])
+
+        for _, target in candidate_pairs:
+            if add_undirected(source, target, strict_degree=False, allow_cross=False):
+                return True
+        for _, target in candidate_pairs:
+            if add_undirected(source, target, strict_degree=False, allow_cross=True):
+                return True
+        return False
+
+    def enforce_isolated_node_connections() -> None:
+        for idx in range(len(nodes)):
+            if degree[idx] > 0:
+                continue
+            preferred_targets = sorted(
+                (j for j in range(len(nodes)) if j != idx and degree[j] > 0),
+                key=lambda j: nodes[idx].position.distance_to(nodes[j].position),
+            )
+            if try_connect_node_to_targets(idx, preferred_targets[:8], max_dist_scale=1.35):
+                continue
+
+            fallback_targets = sorted(
+                (j for j in range(len(nodes)) if j != idx),
+                key=lambda j: nodes[idx].position.distance_to(nodes[j].position),
+            )
+            try_connect_node_to_targets(idx, fallback_targets[:10], max_dist_scale=1.8)
+
+    enforce_isolated_node_connections()
+
+    guard = 0
+    while guard < len(nodes) * 10:
+        guard += 1
+        comps = get_components()
+        if len(comps) <= 1:
+            break
+
+        comps.sort(key=len)
+        current = comps[0]
+        remaining = set().union(*comps[1:])
+        candidate_pairs: list[tuple[float, int, int]] = []
+        for i in current:
+            for j in remaining:
+                d = nodes[i].position.distance_to(nodes[j].position)
+                candidate_pairs.append((d, i, j))
+        candidate_pairs.sort(key=lambda item: item[0])
+
+        linked = False
+        for dist, i, j in candidate_pairs:
+            if dist > max_edge * 1.5:
+                break
+            if add_undirected(i, j, strict_degree=False, allow_cross=False):
+                linked = True
+                break
+        if not linked:
+            for dist, i, j in candidate_pairs[:12]:
+                if dist > max_edge * 2.2:
+                    break
+                if add_undirected(i, j, strict_degree=False, allow_cross=True):
+                    linked = True
+                    break
+        if not linked:
+            break
+
+    enforce_isolated_node_connections()
+
+    return network
+
+
+def _build_birth_network(configs: dict[str, Any]) -> RoadNetwork:
+    """根据配置构建城市诞生路网，失败时回退到默认网格。"""
+    def _network_is_connected(network: RoadNetwork) -> bool:
+        if not network.nodes:
+            return False
+        node_ids = list(network.nodes.keys())
+        adjacency: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+        for edge in network.edges.values():
+            adjacency[edge.from_node.node_id].add(edge.to_node.node_id)
+            adjacency[edge.to_node.node_id].add(edge.from_node.node_id)
+        if any(not neighbors for neighbors in adjacency.values()):
+            return False
+
+        visited = {node_ids[0]}
+        stack = [node_ids[0]]
+        while stack:
+            current = stack.pop()
+            for nxt in adjacency[current]:
+                if nxt not in visited:
+                    visited.add(nxt)
+                    stack.append(nxt)
+        return len(visited) == len(node_ids)
+
+    if not bool(configs.get("city_birth", True)):
+        return _build_default_planning_grid()
+    
+    # 获取网络类型
+    network_type = configs.get("city_birth_network_type", "procedural")
+    
+    # 规整网络模式（十字、网格、放射）
+    if network_type in ("cross", "grid", "radial"):
+        try:
+            if network_type == "cross":
+                network = create_cross_network(env=None, center=Vector2D(0, 0), arm_length=400.0, add_ring=False)
+                print(f"[城市诞生] 十字形初始路网: {len(network.nodes)} 节点, {len(network.edges)} 边")
+            elif network_type == "grid":
+                # 根据节点数计算网格大小
+                target_nodes = configs.get("city_birth_nodes", 18)
+                if target_nodes <= 9:
+                    grid_size = 2  # 2x2 = 4节点
+                elif target_nodes <= 16:
+                    grid_size = 3  # 3x3 = 9节点
+                elif target_nodes <= 25:
+                    grid_size = 4  # 4x4 = 16节点
+                else:
+                    grid_size = 5  # 5x5 = 25节点
+                spacing = configs.get("city_birth_scale", 120.0) * 2.5
+                network = create_grid_network(env=None, center=Vector2D(0, 0), grid_size=grid_size, spacing=spacing)
+                print(f"[城市诞生] 网格初始路网 ({grid_size}x{grid_size}): {len(network.nodes)} 节点, {len(network.edges)} 边")
+            else:  # radial
+                # 根据节点数计算放射臂数
+                target_nodes = configs.get("city_birth_nodes", 18)
+                if target_nodes <= 12:
+                    num_arms = 4
+                    num_rings = 1
+                elif target_nodes <= 20:
+                    num_arms = 6
+                    num_rings = 1
+                else:
+                    num_arms = 6
+                    num_rings = 2
+                arm_length = configs.get("city_birth_scale", 120.0) * 4.0
+                network = create_radial_network(env=None, center=Vector2D(0, 0), num_arms=num_arms, num_rings=num_rings, arm_length=arm_length)
+                print(f"[城市诞生] 放射状初始路网 ({num_arms}臂{num_rings}环): {len(network.nodes)} 节点, {len(network.edges)} 边")
+            
+            # 规整网络模式直接返回，不需要检查连通性（它们天生就是连通的）
+            return network
+        except Exception as e:
+            print(f"[城市诞生] {network_type} 初始路网生成失败，回退procedural: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Procedural 模式（默认）
+    try:
+        network = _build_procedural_birth_network(configs)
+        if len(network.nodes) >= 6 and len(network.edges) >= 10 and _network_is_connected(network):
+            print(f"[城市诞生] procedural 初始路网生成成功: {len(network.nodes)} 节点, {len(network.edges)} 边")
+            return network
+        print("[城市诞生] procedural 路网拓扑异常，回退2x2初始网格")
+    except Exception as e:
+        print(f"[城市诞生] procedural 初始路网生成失败，回退2x2: {e}")
+    return _build_default_planning_grid()
+
+def _compute_network_bounds(network: RoadNetwork) -> tuple[float, float, float, float]:
+    """计算路网边界。"""
+    if not network.nodes:
+        return (0.0, 0.0, 600.0, 600.0)
+    xs = [n.position.x for n in network.nodes.values()]
+    ys = [n.position.y for n in network.nodes.values()]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+def _build_initial_zones_for_birth(network: RoadNetwork) -> list[tuple[Any, Vector2D, float, float, str]]:
+    """根据路网边界生成初始功能区。"""
+    from city.urban_planning.zone import ZoneType
+
+    min_x, min_y, max_x, max_y = _compute_network_bounds(network)
+    width = max(300.0, max_x - min_x)
+    height = max(300.0, max_y - min_y)
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+
+    dx = width * 0.28
+    dy = height * 0.28
+    zone_w = max(70.0, min(140.0, width * 0.18))
+    zone_h = max(60.0, min(120.0, height * 0.16))
+
+    return [
+        (ZoneType.RESIDENTIAL, Vector2D(center_x - dx, center_y - dy), zone_w + 20, zone_h + 10, "阳光小区"),
+        (ZoneType.COMMERCIAL, Vector2D(center_x + dx, center_y - dy), zone_w, zone_h, "中心商业街"),
+        (ZoneType.SCHOOL, Vector2D(center_x - dx, center_y + dy), zone_w + 10, zone_h, "希望小学"),
+        (ZoneType.PARK, Vector2D(center_x + dx, center_y + dy), zone_w + 20, zone_h + 20, "市民公园"),
+    ]
+
 def create_planning_simulation(agent_configs: dict | None = None) -> SimulationEnvironment:
-    """创建路网规划模式的仿真环境 - 从2x2网格开始。
+    """创建路网规划模式的仿真环境（支持城市诞生融合）。
     
     Args:
         agent_configs: 智能体LLM配置，格式为 {'vehicle': True, 'traffic_light': True, 'planning': True}
@@ -596,7 +1128,11 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
     configs = {
         'vehicle': True,
         'traffic_light': True,
-        'planning': True
+        'planning': True,
+        'city_birth': True,
+        'city_birth_seed': 42,
+        'city_birth_nodes': 18,
+        'city_birth_seed_spokes': 6
     }
     if agent_configs:
         configs.update(agent_configs)
@@ -632,15 +1168,19 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
                 network.create_edge(current, down, num_lanes=2, bidirectional=True)
     
     # 创建仿真环境
+    # 城市诞生融合：使用 procedural 风格初始路网覆盖默认网格
+    network = _build_birth_network(configs)
     config = SimulationConfig()
     env = SimulationEnvironment(network, config)
     
     # 添加人口驱动的路网规划智能体（专注于路网扩展）
     # 兼容旧版配置 'planning'，新版使用 'road_planning'
     road_planning_use_llm = configs.get('road_planning', configs.get('planning', True)) and LLM_AVAILABLE
+    road_planning_memory_enabled = bool(configs.get('road_planning', configs.get('planning', True)))
     planning_agent = PlanningAgent(
         environment=env,
         use_llm=road_planning_use_llm,
+        enable_memory=road_planning_memory_enabled,
         population_per_node=5,       # 每个节点5辆车（人口）- 增加初始容量
         expansion_threshold=0.5,     # 50%容量时扩张 - 降低阈值便于快速扩张
         spawn_interval=2.0,          # 每2秒尝试生成新车 - 加快生成
@@ -655,9 +1195,11 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
     # 添加城市规划智能体（专注于功能区域规划）
     # 兼容旧版配置 'planning'，新版使用 'zoning'
     zoning_use_llm = configs.get('zoning', configs.get('planning', True)) and LLM_AVAILABLE
+    zoning_memory_enabled = bool(configs.get('zoning', configs.get('planning', True)))
     zoning_agent = ZoningAgent(
         environment=env,
         use_llm=zoning_use_llm,
+        enable_memory=zoning_memory_enabled,
         planning_interval=15.0,      # 每15秒尝试规划
         max_zones=30
     )
@@ -674,6 +1216,8 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
         (ZoneType.PARK, Vector2D(450, 450), 100, 100, "市民公园"),
     ]
     
+    # 城市诞生融合：按初始路网边界动态放置初始功能区
+    initial_zones = _build_initial_zones_for_birth(network)
     for zone_type, center, width, height, name in initial_zones:
         zone = Zone(
             zone_type=zone_type,
@@ -691,11 +1235,20 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
     
     print(f"[系统] 共添加 {len(env.agents)} 个智能体")
     
+    # 调试：打印所有智能体及其记忆状态
+    try:
+        for agent_id, agent in env.agents.items():
+            has_mem = hasattr(agent, 'has_memory') and agent.has_memory()
+            print(f"[调试] 智能体 {agent_id}: type={type(agent).__name__}, has_memory={has_mem}")
+    except Exception as e:
+        print(f"[调试] 打印智能体信息失败: {e}")
+    
     # 存储智能体LLM配置到环境，供生成车辆时使用
     env.agent_configs = configs
     
     # 为所有交叉口添加红绿灯
     traffic_light_use_llm = configs.get('traffic_light', True) and LLM_AVAILABLE
+    traffic_light_memory_enabled = bool(configs.get('traffic_light', True))
     for node in network.nodes.values():
         # 计算节点的总边数（入边 + 出边）
         total_edges = len(node.incoming_edges) + len(node.outgoing_edges)
@@ -708,13 +1261,15 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
                 control_node=node,
                 name=f"TL_{node.name}",
                 environment=env,
-                use_llm=traffic_light_use_llm
+                use_llm=traffic_light_use_llm,
+                enable_memory=traffic_light_memory_enabled
             )
             tl_agent.activate()
             env.add_agent(tl_agent)
             print(f"[路网规划] 添加红绿灯智能体 {tl_agent.agent_id} (LLM={'启用' if traffic_light_use_llm else '禁用'})")
     
-    print(f"[路网规划] 创建2x2初始网格，节点间距{NODE_SPACING}m")
+    print(f"[路网规划] 初始城市诞生完成: {len(network.nodes)} 节点, {len(network.edges)} 边")
+    print(f"[系统] 最终智能体数量: {len(env.agents)} 个")
     return env
 
 def planning_simulation_loop():
@@ -776,6 +1331,27 @@ def planning_simulation_loop():
                             elif isinstance(agent, ZoningAgent):
                                 zoning_agent_status = agent.get_status()
                     
+                    # 获取智能体记忆数据
+                    agent_memories_data = {}
+                    agents_with_memory_list = []
+                    if planning_simulation:
+                        for agent in planning_simulation.agents.values():
+                            if hasattr(agent, 'has_memory_data') and agent.has_memory_data():
+                                try:
+                                    memory = agent.get_memory()
+                                    memory_data = memory.to_dict()
+                                    agent_memories_data[agent.agent_id] = memory_data
+                                    agents_with_memory_list.append({
+                                        "id": agent.agent_id,
+                                        "type": _get_memory_agent_kind(agent),
+                                        "name": getattr(agent, 'name', agent.agent_id),
+                                        "has_memory": True,
+                                        "memory_count": memory_data.get("statistics", {}).get("total_memories", 0),
+                                        "memory_summary": memory.generate_summary()
+                                    })
+                                except Exception as e:
+                                    print(f"[记忆数据] 获取智能体 {agent.agent_id} 记忆失败: {e}")
+                    
                     data = {
                         "time": current_time,
                         "is_running": is_planning_running,
@@ -786,7 +1362,9 @@ def planning_simulation_loop():
                         "planning_agent": planning_agent_status,
                         "zoning_agent": zoning_agent_status,
                         "expansion_history": [],
-                        "statistics": {"active_vehicles": vehicles_count}
+                        "statistics": {"active_vehicles": vehicles_count},
+                        "agent_memories": agent_memories_data,
+                        "agents_with_memory": agents_with_memory_list
                     }
                     safe_emit("planning_update", data)
                     
@@ -802,13 +1380,13 @@ def planning_simulation_loop():
                 print(f"[状态] time={current_time:.1f}s, step={step_count}, vehicles={vehicles_count}", flush=True)
                 last_log_time = time.time()
             
-            time.sleep(0.05)
+            socketio.sleep(0.05)
             
         except Exception as e:
             print(f"[路网规划循环错误] {e}", flush=True)
             import traceback
             traceback.print_exc()
-            time.sleep(0.1)
+            socketio.sleep(0.1)
     
     print(f"[路网规划循环] 结束，共运行 {step_count} 步", flush=True)
 
@@ -872,7 +1450,11 @@ def control_planning_simulation():
     agent_configs = data.get("agent_configs", {
         'vehicle': True,
         'traffic_light': True,
-        'planning': True
+        'planning': True,
+        'city_birth': True,
+        'city_birth_seed': 42,
+        'city_birth_nodes': 18,
+        'city_birth_seed_spokes': 6
     })
     
     print(f"[Planning Control] 收到请求: action={action}", flush=True)
@@ -1069,7 +1651,7 @@ zoning_thread: threading.Thread | None = None
 is_zoning_running = False
 zoning_lock = threading.Lock()
 
-def create_zoning_simulation() -> SimulationEnvironment:
+def create_zoning_simulation(agent_configs: dict | None = None) -> SimulationEnvironment:
     """创建城市规划模式的仿真环境。"""
     from city.agents.planning_agent import PlanningAgent
     from city.urban_planning.zoning_agent import ZoningAgent
@@ -1102,11 +1684,21 @@ def create_zoning_simulation() -> SimulationEnvironment:
     # 创建仿真环境
     config = SimulationConfig()
     env = SimulationEnvironment(network, config)
+    configs = {
+        'vehicle': True,
+        'traffic_light': True,
+        'road_planning': True,
+        'zoning': True,
+    }
+    if agent_configs:
+        configs.update(agent_configs)
+    env.agent_configs = configs
     
     # 添加路网规划Agent
     planning_agent = PlanningAgent(
         environment=env,
-        use_llm=LLM_AVAILABLE,
+        use_llm=configs.get('road_planning', True) and LLM_AVAILABLE,
+        enable_memory=bool(configs.get('road_planning', True)),
         population_per_node=3,
         expansion_threshold=0.7,
         spawn_interval=4.0,
@@ -1120,7 +1712,7 @@ def create_zoning_simulation() -> SimulationEnvironment:
     # 添加城市规划Agent
     zoning_agent = ZoningAgent(
         environment=env,
-        use_llm=LLM_AVAILABLE,
+        use_llm=configs.get('zoning', True) and LLM_AVAILABLE,
         planning_interval=20.0,
         max_zones=25,
         min_zone_size=60.0,
@@ -1139,7 +1731,8 @@ def create_zoning_simulation() -> SimulationEnvironment:
                 control_node=node,
                 name=f"TL_{node.name}",
                 environment=env,
-                use_llm=LLM_AVAILABLE
+                use_llm=configs.get('traffic_light', True) and LLM_AVAILABLE,
+                enable_memory=bool(configs.get('traffic_light', True))
             )
             tl_agent.activate()
             env.add_agent(tl_agent)
@@ -1243,13 +1836,13 @@ def zoning_simulation_loop():
                     }
                 safe_emit("zoning_update", data)
             
-            time.sleep(0.05)
+            socketio.sleep(0.05)
             
         except Exception as e:
             print(f"[城市规划循环错误] {e}")
             import traceback
             traceback.print_exc()
-            time.sleep(0.1)
+            socketio.sleep(0.1)
     
     print("[城市规划循环] 结束")
 
@@ -1301,7 +1894,7 @@ def control_zoning_simulation():
     if action == "start":
         with zoning_lock:
             if zoning_simulation is None:
-                zoning_simulation = create_zoning_simulation()
+                zoning_simulation = create_zoning_simulation(agent_configs)
                 print("[Zoning Control] 创建新城市规划环境")
             
             if not is_zoning_running:
@@ -1312,7 +1905,7 @@ def control_zoning_simulation():
                 zoning_thread.daemon = True
                 zoning_thread.start()
                 print("[Zoning Control] 城市规划线程已启动")
-        return jsonify({"status": "started"})
+        return jsonify({"status": "started", "agent_configs": agent_configs})
     
     elif action == "pause":
         with zoning_lock:
@@ -1326,8 +1919,8 @@ def control_zoning_simulation():
             is_zoning_running = False
             if zoning_simulation:
                 zoning_simulation.reset()
-            zoning_simulation = create_zoning_simulation()
-        return jsonify({"status": "reset"})
+            zoning_simulation = create_zoning_simulation(agent_configs)
+        return jsonify({"status": "reset", "agent_configs": agent_configs})
     
     return jsonify({"error": "未知操作"}), 400
 

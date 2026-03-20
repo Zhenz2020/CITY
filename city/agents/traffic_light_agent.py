@@ -53,9 +53,10 @@ class TrafficLightAgent(BaseAgent):
         control_node: Node,
         environment: SimulationEnvironment | None = None,
         use_llm: bool = True,
-        name: str = "智能红绿灯"
+        name: str = "智能红绿灯",
+        enable_memory: bool = True
     ) -> None:
-        super().__init__(AgentType.TRAFFIC_MANAGER, environment, use_llm)
+        super().__init__(AgentType.TRAFFIC_MANAGER, environment, use_llm, enable_memory=enable_memory, memory_capacity=40)
         self.control_node = control_node
         self.traffic_light = control_node.traffic_light
         self.name = name
@@ -209,6 +210,8 @@ class TrafficLightAgent(BaseAgent):
         - 所有车辆智能体都通过LLM做决策
         """
         current_time = self.environment.current_time if self.environment else 0
+        if int(current_time) % 5 == 0:
+            self.record_perception(self.perceive(), importance=2.0)
         
         # 决策冷却（但如果有车辆等待可能需要立即决策）
         if current_time - self.last_decision_time < self.decision_cooldown:

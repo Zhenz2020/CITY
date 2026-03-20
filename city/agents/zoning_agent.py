@@ -47,8 +47,9 @@ class ZoningAgent(BaseAgent):
         max_zones: int = 30,
         min_zone_size: float = 60.0,
         max_zone_size: float = 150.0,
+        enable_memory: bool = True
     ):
-        super().__init__(AgentType.TRAFFIC_PLANNER, environment, use_llm)
+        super().__init__(AgentType.TRAFFIC_PLANNER, environment, use_llm, enable_memory=enable_memory, memory_capacity=50)
         
         self.planning_interval = planning_interval
         self.max_zones = max_zones
@@ -141,6 +142,13 @@ class ZoningAgent(BaseAgent):
         """
         # 检查是否满足规划条件
         network_info = self._get_network_info()
+        perception = self.perceive()
+        self.record_perception(perception, importance=3.0)
+        if self.has_memory():
+            self.get_memory().set_working_memory('latest_zoning_state', {
+                'total_zones': perception.get('total_zones', 0),
+                'can_add_more': perception.get('can_add_more', False),
+            })
         if network_info['nodes'] < 4:
             return None
         
@@ -157,10 +165,30 @@ class ZoningAgent(BaseAgent):
         if self.use_llm:
             decision = self._llm_select_location_and_type(road_side_locations)
             if decision:
+                self.record_decision(
+                    {
+                        'action': decision.get('action', 'create_zone'),
+                        'zone_type': decision.get('zone_type').name if decision.get('zone_type') else 'UNKNOWN',
+                        'source': 'llm',
+                    },
+                    {'reason': decision.get('reason', '')},
+                    importance=6.0
+                )
                 return decision
         
         # 回退到规则-based选址
-        return self._rule_select_location_and_type(road_side_locations)
+        decision = self._rule_select_location_and_type(road_side_locations)
+        if decision:
+            self.record_decision(
+                {
+                    'action': decision.get('action', 'create_zone'),
+                    'zone_type': decision.get('zone_type').name if decision.get('zone_type') else 'UNKNOWN',
+                    'source': 'rule',
+                },
+                {'reason': decision.get('reason', '')},
+                importance=5.0
+            )
+        return decision
     
     def _get_road_side_locations(self) -> list[dict]:
         """获取道路边缘的候选位置（沿道路布置）。"""
@@ -572,6 +600,15 @@ class ZoningAgent(BaseAgent):
         if action != 'create_zone':
             return False
         
+        self.record_action(
+            'create_zone',
+            {
+                'zone_type': decision.get('zone_type').name if decision.get('zone_type') else 'UNKNOWN',
+                'reason': decision.get('reason', ''),
+            },
+            importance=5.0
+        )
+        
         try:
             zone_type = decision['zone_type']
             center = decision['center']
@@ -664,6 +701,16 @@ class ZoningAgent(BaseAgent):
                 }
             
             self.planning_history.append(history_entry)
+            self.record_event(
+                '新区规划成功',
+                {
+                    'zone_id': zone.zone_id,
+                    'zone_type': zone_type.name,
+                    'name': name,
+                    'population': zone.population,
+                },
+                importance=7.0
+            )
             
             # 输出
             score_str = f"评分: {decision.get('score', 0):.2f}"

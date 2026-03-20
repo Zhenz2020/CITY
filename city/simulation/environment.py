@@ -161,11 +161,17 @@ class SimulationEnvironment:
         """
         from city.agents.vehicle import VehicleType
 
+        vehicle_memory_enabled = True
+        agent_configs = getattr(self, 'agent_configs', None)
+        if isinstance(agent_configs, dict) and 'vehicle' in agent_configs:
+            vehicle_memory_enabled = bool(agent_configs.get('vehicle'))
+
         vehicle = Vehicle(
             vehicle_type=vehicle_type or VehicleType.CAR,
             environment=self,
             start_node=start_node,
-            end_node=end_node
+            end_node=end_node,
+            enable_memory=vehicle_memory_enabled
         )
 
         # 规划路线

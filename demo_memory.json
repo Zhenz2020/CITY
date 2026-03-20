@@ -1,0 +1,216 @@
+{
+  "agent_id": "traffic_manager_1",
+  "short_term": [
+    {
+      "timestamp": 0.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "perception",
+      "content": {
+        "location": "intersection_0",
+        "traffic_level": "high",
+        "weather": "sunny"
+      },
+      "importance": 3.0,
+      "tags": [
+        "perception",
+        "environment"
+      ]
+    },
+    {
+      "timestamp": 0.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "decision",
+      "content": {
+        "decision": {
+          "action": "extend_green",
+          "duration": 30
+        },
+        "context": {
+          "reason": "peak hour"
+        }
+      },
+      "importance": 5.0,
+      "tags": [
+        "decision",
+        "reasoning"
+      ]
+    },
+    {
+      "timestamp": 10.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "perception",
+      "content": {
+        "location": "intersection_1",
+        "traffic_level": "low",
+        "weather": "sunny"
+      },
+      "importance": 3.0,
+      "tags": [
+        "perception",
+        "environment"
+      ]
+    },
+    {
+      "timestamp": 10.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "decision",
+      "content": {
+        "decision": {
+          "action": "maintain",
+          "duration": 30
+        },
+        "context": {
+          "reason": "peak hour"
+        }
+      },
+      "importance": 5.0,
+      "tags": [
+        "decision",
+        "reasoning"
+      ]
+    },
+    {
+      "timestamp": 20.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "perception",
+      "content": {
+        "location": "intersection_2",
+        "traffic_level": "high",
+        "weather": "sunny"
+      },
+      "importance": 3.0,
+      "tags": [
+        "perception",
+        "environment"
+      ]
+    },
+    {
+      "timestamp": 20.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "decision",
+      "content": {
+        "decision": {
+          "action": "extend_green",
+          "duration": 30
+        },
+        "context": {
+          "reason": "peak hour"
+        }
+      },
+      "importance": 5.0,
+      "tags": [
+        "decision",
+        "reasoning"
+      ]
+    },
+    {
+      "timestamp": 30.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "perception",
+      "content": {
+        "location": "intersection_3",
+        "traffic_level": "low",
+        "weather": "sunny"
+      },
+      "importance": 3.0,
+      "tags": [
+        "perception",
+        "environment"
+      ]
+    },
+    {
+      "timestamp": 30.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "decision",
+      "content": {
+        "decision": {
+          "action": "maintain",
+          "duration": 30
+        },
+        "context": {
+          "reason": "peak hour"
+        }
+      },
+      "importance": 5.0,
+      "tags": [
+        "decision",
+        "reasoning"
+      ]
+    },
+    {
+      "timestamp": 30.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "event",
+      "content": {
+        "event": "检测到拥堵",
+        "details": {
+          "location": "main_st",
+          "severity": "high"
+        }
+      },
+      "importance": 8.0,
+      "tags": [
+        "event"
+      ]
+    },
+    {
+      "timestamp": 40.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "perception",
+      "content": {
+        "location": "intersection_4",
+        "traffic_level": "high",
+        "weather": "sunny"
+      },
+      "importance": 3.0,
+      "tags": [
+        "perception",
+        "environment"
+      ]
+    },
+    {
+      "timestamp": 40.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "decision",
+      "content": {
+        "decision": {
+          "action": "extend_green",
+          "duration": 30
+        },
+        "context": {
+          "reason": "peak hour"
+        }
+      },
+      "importance": 5.0,
+      "tags": [
+        "decision",
+        "reasoning"
+      ]
+    }
+  ],
+  "long_term": [
+    {
+      "timestamp": 30.0,
+      "real_time": 1773647864.3827496,
+      "memory_type": "event",
+      "content": {
+        "event": "检测到拥堵",
+        "details": {
+          "location": "main_st",
+          "severity": "high"
+        }
+      },
+      "importance": 8.0,
+      "tags": [
+        "event"
+      ]
+    }
+  ],
+  "working_memory": {},
+  "statistics": {
+    "total_memories": 11,
+    "short_term_count": 11,
+    "long_term_count": 1,
+    "summarized_count": 0
+  }
+}

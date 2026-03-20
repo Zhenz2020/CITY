@@ -135,9 +135,10 @@ class Vehicle(BaseAgent):
         environment: SimulationEnvironment | None = None,
         start_node: Node | None = None,
         end_node: Node | None = None,
-        use_llm: bool = False
+        use_llm: bool = False,
+        enable_memory: bool = True
     ) -> None:
-        super().__init__(AgentType.VEHICLE, environment, use_llm)
+        super().__init__(AgentType.VEHICLE, environment, use_llm, enable_memory=enable_memory, memory_capacity=30)
         self.vehicle_type = vehicle_type
 
         # 获取车辆参数
@@ -573,10 +574,16 @@ class Vehicle(BaseAgent):
         # 首先检测死锁
         if self._check_deadlock():
             self.vehicle_state = VehicleState.DEADLOCKED
+            # 记录死锁事件到记忆
+            self.record_event("死锁检测", {"recovery_action": "attempting"}, importance=8.0)
             return self._deadlock_recovery()
 
         # ========== 安全层：强制安全规则（最高优先级）==========
         perception = self.perceive()
+        
+        # 记录感知到记忆（每隔一定时间）
+        if int(current_time) % 5 == 0:  # 每5秒记录一次
+            self.record_perception(perception, importance=2.0)
         safety_action = self._safety_check(perception)
         
         # 无论安全规则是否触发，都要尝试提交LLM决策请求（异步）
@@ -616,10 +623,25 @@ class Vehicle(BaseAgent):
         # 如果安全规则触发，优先使用安全动作
         if safety_action:
             self.current_action = safety_action
+            # 记录安全干预到记忆
+            self.record_decision(
+                {"action": safety_action.name, "source": "safety_rule"},
+                {"trigger": "safety_check"},
+                importance=6.0
+            )
             return safety_action
 
         # 规则决策作为fallback
-        return self._rule_based_decide()
+        action = self._rule_based_decide()
+        
+        # 记录决策到记忆
+        self.record_decision(
+            {"action": action.name, "source": "rule_based"},
+            {"velocity": self.velocity, "state": self.vehicle_state.name},
+            importance=3.0
+        )
+        
+        return action
     
     def _safety_check(self, perception: dict) -> VehicleAction | None:
         """
@@ -903,6 +925,12 @@ class Vehicle(BaseAgent):
     def act(self, action: VehicleAction) -> None:
         """执行驾驶动作 - 增强版。"""
         dt = 0.1  # 时间步长
+        
+        # 记录重要行动到记忆
+        if action in (VehicleAction.EMERGENCY_BRAKE, VehicleAction.STOP):
+            self.record_action(action.name, {"velocity": self.velocity}, importance=5.0)
+        elif action in (VehicleAction.CHANGE_LANE_LEFT, VehicleAction.CHANGE_LANE_RIGHT):
+            self.record_action(action.name, {"edge": str(self.current_edge)}, importance=4.0)
         
         if action == VehicleAction.ACCELERATE:
             self.velocity = min(

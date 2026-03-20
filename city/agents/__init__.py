@@ -3,6 +3,8 @@
 
 包含交通仿真系统中的各类智能体：
 - BaseAgent: 智能体基类
+- AgentMemory: 智能体记忆模块
+- MemoryEntry: 记忆条目
 - Vehicle: 车辆代理
 - Pedestrian: 行人代理
 - TrafficManager: 交通管理者

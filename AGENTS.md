@@ -46,6 +46,7 @@ CITY/
 │   ├── __init__.py
 │   ├── agents/               # 智能体模块
 │   │   ├── base.py          # 智能体基类
+│   │   ├── memory.py        # 智能体记忆模块
 │   │   ├── vehicle.py       # 车辆代理
 │   │   ├── pedestrian.py    # 行人代理
 │   │   ├── traffic_manager.py   # 交通管理者
@@ -101,6 +102,37 @@ CITY/
 #### 基类 (`base.py`)
 - `BaseAgent`: 所有智能体的抽象基类
 - 定义 `perceive() -> decide() -> act()` 循环
+- 支持记忆模块（`enable_memory` 参数）
+
+#### 记忆模块 (`memory.py`)
+- `AgentMemory`: 智能体独立记忆存储系统
+  - **短期记忆**: 固定容量的双端队列（默认50条）
+  - **长期记忆**: 重要事件的持久化存储
+  - **工作记忆**: 当前会话的上下文
+- `MemoryEntry`: 记忆条目数据结构
+  - 时间戳、记忆类型、内容、重要性评分、标签
+- 记忆类型：`perception`（感知）、`decision`（决策）、`action`（行动）、`event`（事件）、`interaction`（交互）
+- 提供记忆检索、搜索、摘要生成功能
+- 支持保存/加载到文件
+
+**使用方法**:
+```python
+# 创建智能体时启用记忆
+vehicle = Vehicle(
+    vehicle_type=VehicleType.CAR,
+    enable_memory=True,  # 启用记忆
+    memory_capacity=50   # 短期记忆容量
+)
+
+# 记录各种记忆
+vehicle.record_perception({"speed": 30, "light": "green"})
+vehicle.record_decision({"action": "accelerate"}, {"reason": "clear road"})
+vehicle.record_action("change_lane", {"result": "success"})
+vehicle.record_event("接近路口", {"distance": 50})
+
+# 获取记忆上下文供LLM使用
+memory_context = vehicle.get_memory_context(max_entries=10)
+```
 
 #### 车辆代理 (`vehicle.py`)
 - `Vehicle`: 模拟各类车辆
@@ -712,6 +744,7 @@ WebSocket事件:
 - [x] **集成大语言模型API**
 - [x] **路网规划智能体** - 基于OD分析动态扩展路网
 - [x] **城市规划智能体** - 基于LLM的功能区域规划
+- [x] **智能体记忆模块** - 为每个智能体提供独立记忆存储
 - [ ] 集成真实 RL 框架
 - [ ] 支持 OpenStreetMap 数据导入
 - [ ] 性能优化（支持大规模仿真）
@@ -725,4 +758,4 @@ WebSocket事件:
 
 ---
 
-*最后更新: 2026-03-09*
+*最后更新: 2026-03-16*
