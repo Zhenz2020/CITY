@@ -220,6 +220,40 @@ def _get_memory_agent_kind(agent: Any) -> str:
         return "pedestrian"
     return agent.agent_type.name.lower() if hasattr(agent.agent_type, "name") else type(agent).__name__.lower()
 
+
+def _build_agent_memory_payload(env: SimulationEnvironment) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """构建前端记忆面板所需的数据。"""
+    agent_memories_data: dict[str, Any] = {}
+    agents_with_memory_list: list[dict[str, Any]] = []
+
+    for agent in env.agents.values():
+        if not hasattr(agent, 'has_memory') or not agent.has_memory():
+            continue
+
+        memory_count = 0
+        memory_summary = "已启用，暂无记忆条目"
+
+        try:
+            memory = agent.get_memory()
+            if hasattr(agent, 'has_memory_data') and agent.has_memory_data():
+                memory_data = memory.to_dict()
+                agent_memories_data[agent.agent_id] = memory_data
+                memory_count = memory_data.get("statistics", {}).get("total_memories", 0)
+                memory_summary = memory.generate_summary() or memory_summary
+        except Exception as e:
+            print(f"[记忆数据] 获取智能体 {agent.agent_id} 记忆失败: {e}")
+
+        agents_with_memory_list.append({
+            "id": agent.agent_id,
+            "type": _get_memory_agent_kind(agent),
+            "name": getattr(agent, 'name', agent.agent_id),
+            "has_memory": True,
+            "memory_count": memory_count,
+            "memory_summary": memory_summary
+        })
+
+    return agent_memories_data, agents_with_memory_list
+
 def get_network_data(env: SimulationEnvironment) -> dict:
     network = env.road_network
     nodes_data = []
@@ -408,6 +442,9 @@ def simulation_loop():
             
             if should_update:
                 with lock:
+                    if planning_simulation:
+                        agent_memories_data, agents_with_memory_list = _build_agent_memory_payload(planning_simulation)
+
                     data = {
                         "time": simulation.current_time,
                         "agents": get_agents_data(simulation),
@@ -1361,11 +1398,13 @@ def planning_simulation_loop():
                         "zones": zones_data,
                         "planning_agent": planning_agent_status,
                         "zoning_agent": zoning_agent_status,
-                        "expansion_history": [],
+                        "expansion_history": planning_simulation.get_expansion_history() if planning_simulation else [],
                         "statistics": {"active_vehicles": vehicles_count},
                         "agent_memories": agent_memories_data,
                         "agents_with_memory": agents_with_memory_list
                     }
+                    if planning_simulation:
+                        data["agent_memories"], data["agents_with_memory"] = _build_agent_memory_payload(planning_simulation)
                     safe_emit("planning_update", data)
                     
                     # 每50步打印发送详情（包含zones数量）
@@ -1426,18 +1465,21 @@ def get_planning_state():
         
         # 获取区域数据
         zones_data = get_zoning_data(planning_simulation)
+        agent_memories_data, agents_with_memory_list = _build_agent_memory_payload(planning_simulation)
         
         return jsonify({
             "time": planning_simulation.current_time,
             "is_running": is_planning_running,
             "agents": simple_agents,
             "traffic_lights": [],
-            "network": {"nodes": [], "edges": []},
-            "expansion_history": [],
+            "network": get_network_data(planning_simulation),
+            "expansion_history": planning_simulation.get_expansion_history(),
             "planning_agent": planning_agent_status,
             "zoning_agent": zoning_agent_status,
             "zones": zones_data,
-            "statistics": {"active_vehicles": len(planning_simulation.vehicles)}
+            "statistics": {"active_vehicles": len(planning_simulation.vehicles)},
+            "agent_memories": agent_memories_data,
+            "agents_with_memory": agents_with_memory_list
         })
 
 @app.route("/api/planning/control", methods=["POST"])
