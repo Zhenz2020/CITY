@@ -479,6 +479,59 @@ class SimulationEnvironment:
         })
         
         return edge
+
+    def upgrade_edge_lanes_dynamically(
+        self,
+        from_node: Node,
+        to_node: Node,
+        new_num_lanes: int,
+        bidirectional: bool = True
+    ) -> bool:
+        """
+        动态提升已有道路的车道数。
+
+        默认会同时提升正反两个方向，保证双向道路宽度一致。
+        """
+        edge = self.road_network.find_edge(from_node, to_node)
+        if edge is None:
+            return False
+
+        reverse_edge = self.road_network.find_edge(to_node, from_node) if bidirectional else None
+        old_num_lanes = len(edge.lanes)
+        if new_num_lanes <= old_num_lanes:
+            return False
+
+        upgraded = edge.ensure_lane_count(new_num_lanes)
+        reverse_upgraded = False
+        if reverse_edge is not None:
+            reverse_upgraded = reverse_edge.ensure_lane_count(new_num_lanes)
+
+        if not upgraded and not reverse_upgraded:
+            return False
+
+        self.expansion_history.append({
+            'time': self.current_time,
+            'type': 'upgrade_edge',
+            'edge_id': edge.edge_id,
+            'reverse_edge_id': reverse_edge.edge_id if reverse_edge else None,
+            'from_node': from_node.node_id,
+            'to_node': to_node.node_id,
+            'old_num_lanes': old_num_lanes,
+            'new_num_lanes': new_num_lanes,
+            'bidirectional': bidirectional
+        })
+
+        self._log_event('network_expansion', {
+            'action': 'upgrade_edge',
+            'edge_id': edge.edge_id,
+            'reverse_edge_id': reverse_edge.edge_id if reverse_edge else None,
+            'from_node': from_node.node_id,
+            'to_node': to_node.node_id,
+            'old_num_lanes': old_num_lanes,
+            'new_num_lanes': new_num_lanes
+        })
+
+        return True
     
     def get_expansion_history(self) -> list[dict[str, Any]]:
         """获取路网扩展历史。"""

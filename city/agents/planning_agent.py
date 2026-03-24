@@ -2005,12 +2005,59 @@ class PopulationCityPlanner(BaseAgent):
     
     def _optimize_road_network(self) -> bool:
         """
-        浼樺寲閬撹矾缃戠粶 - 浠呭垹闄ゆ槑鏄鹃噸澶嶇殑瀵硅绾块亾璺€?
-        
-        鏆傛椂绂佺敤澶ч儴鍒嗕紭鍖栵紝淇濇寔璺綉瀹屾暣銆?
+        优先对已有主干路做车道升级。
+
+        当前策略：
+        1. 对每条物理道路汇总双向车辆数
+        2. 优先升级车辆数较多、且仍是 2 车道的道路
+        3. 一次只把一条物理道路提升到 4 车道
         """
-        # 鏆傛椂绂佺敤閬撹矾浼樺寲锛屼繚鎸佽矾缃戝畬鏁?
-        return False
+        if not self.environment:
+            return False
+
+        candidates: list[tuple[float, Edge, int]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for edge in self.environment.road_network.edges.values():
+            pair_key = tuple(sorted((edge.from_node.node_id, edge.to_node.node_id)))
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+
+            reverse_edge = self.environment.road_network.find_edge(edge.to_node, edge.from_node)
+            current_lanes = max(len(edge.lanes), len(reverse_edge.lanes) if reverse_edge else 0)
+            if current_lanes >= 4:
+                continue
+
+            vehicle_count = sum(len(lane.vehicles) for lane in edge.lanes)
+            if reverse_edge:
+                vehicle_count += sum(len(lane.vehicles) for lane in reverse_edge.lanes)
+
+            if vehicle_count <= 0:
+                continue
+
+            score = vehicle_count * 1000 + edge.length
+            candidates.append((score, edge, current_lanes))
+
+        if not candidates:
+            return False
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        _, target_edge, current_lanes = candidates[0]
+        if current_lanes >= 4:
+            return False
+
+        upgraded = self.environment.upgrade_edge_lanes_dynamically(
+            from_node=target_edge.from_node,
+            to_node=target_edge.to_node,
+            new_num_lanes=4,
+            bidirectional=True
+        )
+        if upgraded:
+            print(
+                f"[路网优化] 主干路拓宽 {target_edge.from_node.node_id} <-> "
+                f"{target_edge.to_node.node_id}: {current_lanes} -> 4 车道"
+            )
+        return upgraded
     
     def _can_remove_without_disconnecting(self, from_node, to_node, edge_id_to_skip) -> bool:
         """妫€鏌ュ垹闄よ竟鍚庢槸鍚︿細鏂紑缃戠粶銆"""

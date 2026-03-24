@@ -249,6 +249,34 @@ class Edge:
             return None
         return min(self.lanes, key=lambda l: len(l.vehicles))
 
+    def ensure_lane_count(
+        self,
+        target_num_lanes: int,
+        lane_width: float = 3.5,
+        max_speed: float | None = None
+    ) -> bool:
+        """将当前路段车道数提升到目标值，不执行缩减。"""
+        current_num_lanes = len(self.lanes)
+        if target_num_lanes <= current_num_lanes:
+            return False
+
+        speed = max_speed if max_speed is not None else (self.lanes[0].max_speed if self.lanes else 13.89)
+        for _ in range(current_num_lanes, target_num_lanes):
+            lane = Lane(
+                length=self.length,
+                max_speed=speed,
+                width=lane_width
+            )
+            self.lanes.append(lane)
+
+        for lane in self.lanes:
+            lane.left_lane = None
+            lane.right_lane = None
+        for i in range(len(self.lanes) - 1):
+            self.lanes[i].right_lane = self.lanes[i + 1]
+            self.lanes[i + 1].left_lane = self.lanes[i]
+        return True
+
 
 class RoadNetwork:
     """
@@ -314,6 +342,13 @@ class RoadNetwork:
     def get_edge(self, edge_id: str) -> Edge | None:
         """根据ID获取路段。"""
         return self.edges.get(edge_id)
+
+    def find_edge(self, from_node: Node, to_node: Node) -> Edge | None:
+        """查找两个节点之间的单向边。"""
+        for edge in from_node.outgoing_edges:
+            if edge.to_node.node_id == to_node.node_id:
+                return edge
+        return None
 
     def update_traffic_lights(self, dt: float, skip_nodes: set[str] | None = None) -> None:
         """更新所有交通信号灯。"""
