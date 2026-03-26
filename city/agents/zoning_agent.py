@@ -43,10 +43,11 @@ class ZoningAgent(BaseAgent):
         self,
         environment: SimulationEnvironment | None = None,
         use_llm: bool = True,
-        planning_interval: float = 15.0,  # 规划间隔稍短于路网扩张
+        planning_interval: float = 15.0,  # 规划间隔
         max_zones: int = 30,
         min_zone_size: float = 60.0,
         max_zone_size: float = 150.0,
+        buffer_distance: float = 20.0,
         enable_memory: bool = True
     ):
         super().__init__(AgentType.TRAFFIC_PLANNER, environment, use_llm, enable_memory=enable_memory, memory_capacity=50)
@@ -55,11 +56,16 @@ class ZoningAgent(BaseAgent):
         self.max_zones = max_zones
         self.min_zone_size = min_zone_size
         self.max_zone_size = max_zone_size
+        self.buffer_distance = buffer_distance
         
         # 状态
         self.last_planning_time = 0.0
         self.planning_history: list[dict[str, Any]] = []
         self.last_decision: dict[str, Any] | None = None
+        
+        # 缓存批量决策结果，避免短时间内重复请求LLM
+        self._cached_batch_count: int | None = None
+        self._batch_count_cache_time: float = 0.0
         
         # 区域管理
         self.zone_manager = ZoneManager()
@@ -74,6 +80,39 @@ class ZoningAgent(BaseAgent):
         
         # 统计
         self.total_zones_planned = 0
+        self.llm_decision_archive: list[dict[str, Any]] = []
+    
+    def _archive_llm_decision(
+        self,
+        category: str,
+        prompt: str,
+        response: str | None = None,
+        parsed: dict[str, Any] | None = None,
+        adopted: bool | None = None,
+        status: str = "success",
+        summary: str | None = None,
+        extra: dict[str, Any] | None = None
+    ) -> None:
+        """归档区域规划相关的大模型决策文本。"""
+        timestamp = self.environment.current_time if self.environment else 0.0
+        record = {
+            "id": f"{self.agent_id}_{category}_{int(timestamp * 1000)}_{len(self.llm_decision_archive) + 1}",
+            "timestamp": timestamp,
+            "agent_id": self.agent_id,
+            "agent_type": "zoning",
+            "category": category,
+            "summary": summary or "区域规划决策",
+            "prompt": prompt,
+            "response": response or "",
+            "parsed_decision": parsed or {},
+            "adopted": adopted,
+            "status": status,
+        }
+        if extra:
+            record["extra"] = extra
+        self.llm_decision_archive.append(record)
+        if len(self.llm_decision_archive) > 300:
+            self.llm_decision_archive = self.llm_decision_archive[-300:]
     
     def perceive(self) -> dict[str, Any]:
         """感知城市状态。"""
@@ -130,6 +169,116 @@ class ZoningAgent(BaseAgent):
             'zone_count': len(self.zone_manager.zones)
         }
     
+    def _determine_zone_batch_count(self) -> int:
+        """决定本轮需要新增多少个区域。
+        
+        使用缓存机制避免短时间内重复请求LLM。
+        """
+        if not self.environment:
+            return 0
+
+        remaining_capacity = max(0, self.max_zones - len(self.zone_manager.zones))
+        if remaining_capacity <= 0:
+            return 0
+        
+        # 检查缓存：如果在 planning_interval 内已经决策过，使用缓存结果
+        current_time = self.environment.current_time
+        if (self._cached_batch_count is not None and 
+            current_time - self._batch_count_cache_time < self.planning_interval):
+            return max(1, min(remaining_capacity, self._cached_batch_count))
+
+        if self.use_llm:
+            llm_count = self._llm_determine_zone_batch_count()
+            if llm_count is not None:
+                self._cached_batch_count = llm_count
+                self._batch_count_cache_time = current_time
+                return max(1, min(remaining_capacity, llm_count))
+
+        count = max(1, min(remaining_capacity, self._rule_determine_zone_batch_count()))
+        self._cached_batch_count = count
+        self._batch_count_cache_time = current_time
+        return count
+
+    def _llm_determine_zone_batch_count(self) -> int | None:
+        """使用大模型根据人口与路网状态决定本轮新增区域数。"""
+        try:
+            network_info = self._get_network_info()
+            population_stats = self._get_population_stats()
+            zone_stats = self.zone_manager.get_statistics()
+            planning_agent = self._get_road_planning_agent()
+            expansion_count = len(getattr(planning_agent, 'expansion_history', [])) if planning_agent else 0
+
+            prompt = f"""你是城市规划总控，需要决定这一轮应该新增多少个功能区域。
+
+当前状态：
+- 道路节点数: {network_info.get('nodes', 0)}
+- 道路边数: {network_info.get('edges', 0)}
+- 当前功能区数量: {zone_stats.get('total_zones', 0)}
+- 当前总人口: {population_stats.get('total_population', 0)}
+- 当前总容量: {population_stats.get('max_capacity', 0)}
+- 路网扩展次数: {expansion_count}
+- 各类功能区统计: {json.dumps(zone_stats.get('by_type', {}), ensure_ascii=False)}
+
+决策原则：
+1. 区域数量必须服从人口规模与道路承载能力，不能盲目增加。
+2. 若道路刚扩展且人口在增长，可以一轮增加多个区域。
+3. 若道路不足、人口低、现有区域已经较多，则应保守。
+4. 输出的 count 必须在 1 到 4 之间。
+
+只输出 JSON：
+{{
+  "count": 1-4,
+  "reason": "简短说明"
+}}"""
+
+            llm_manager = self._get_llm_manager()
+            if not llm_manager:
+                return None
+
+            response = llm_manager.request_sync_decision(prompt, timeout=10.0)
+            if not response:
+                return None
+
+            start = response.find('{')
+            end = response.rfind('}')
+            if start == -1 or end == -1:
+                return None
+
+            result = json.loads(response[start:end+1])
+            return int(result.get('count', 1))
+        except Exception as e:
+            print(f"[ZoningAgent] LLM区域数量决策失败: {e}")
+            return None
+
+    def _rule_determine_zone_batch_count(self) -> int:
+        """规则回退：根据人口、路网与现有区域缺口决定本轮新增数量。"""
+        network_info = self._get_network_info()
+        population_stats = self._get_population_stats()
+        zone_count = len(self.zone_manager.zones)
+        nodes = network_info.get('nodes', 0)
+        edges = network_info.get('edges', 0)
+        total_population = population_stats.get('total_population', 0)
+
+        score = 0
+        if nodes >= 12:
+            score += 1
+        if edges >= 24:
+            score += 1
+        if total_population >= 300:
+            score += 1
+        if total_population >= 800:
+            score += 1
+        if zone_count < max(4, nodes // 3):
+            score += 1
+
+        if score >= 4:
+            return 4
+        if score >= 3:
+            return 3
+        if score >= 2:
+            return 2
+        return 1
+
     def decide(self) -> dict[str, Any] | None:
         """
         城市规划决策 - LLM先选位置，再定功能。
@@ -139,7 +288,17 @@ class ZoningAgent(BaseAgent):
         2. 使用LLM选择沿道路的位置
         3. 使用LLM决定该位置最适合的功能类型
         4. 创建区域
+        
+        注意：此方法在BaseAgent.step()中每步都被调用，
+        因此需要自行检查planning_interval避免频繁请求LLM。
         """
+        # 检查规划间隔，避免频繁请求LLM
+        if not self.environment:
+            return None
+        current_time = self.environment.current_time
+        if current_time - self.last_planning_time < self.planning_interval:
+            return None
+        
         # 检查是否满足规划条件
         network_info = self._get_network_info()
         perception = self.perceive()
@@ -542,6 +701,113 @@ class ZoningAgent(BaseAgent):
                 }
         
         return needs
+
+    def _get_road_planning_agent(self):
+        """获取负责路网扩展的智能体。"""
+        if not self.environment:
+            return None
+
+        for agent in self.environment.agents.values():
+            if agent is self:
+                continue
+            if hasattr(agent, 'expansion_history') and hasattr(agent, 'last_expansion_time'):
+                return agent
+        return None
+
+    def _road_network_ready_for_zoning(self) -> bool:
+        """控制“先道路、后区域、再循环”的规划节奏。"""
+        if not self.environment:
+            return False
+
+        network = self.environment.road_network
+        if len(network.nodes) < 6 or len(network.edges) < 8:
+            return False
+
+        planning_agent = self._get_road_planning_agent()
+        if planning_agent is None:
+            return True
+
+        expansion_count = len(getattr(planning_agent, 'expansion_history', []))
+        zone_count = len(self.zone_manager.zones)
+
+        # 基础路网成形后，允许先规划第一批功能区。
+        if zone_count == 0:
+            return True
+
+        # 之后遵循“道路扩展带动区域增长”，但允许一轮扩展带动多个功能区逐步补齐。
+        if expansion_count * 2 > zone_count:
+            last_expansion_time = float(getattr(planning_agent, 'last_expansion_time', 0.0) or 0.0)
+            return (self.environment.current_time - last_expansion_time) >= 2.0
+
+        # 当道路已经较成熟但区域仍然偏少时，允许继续补区，避免城市看起来过空。
+        if len(network.nodes) >= 10 and zone_count < max(4, len(network.nodes) // 2):
+            return True
+
+        return False
+
+    @staticmethod
+    def _segment_intersects_rect(
+        x1: float, y1: float, x2: float, y2: float,
+        min_x: float, min_y: float, max_x: float, max_y: float
+    ) -> bool:
+        """判断线段是否与矩形相交。"""
+        if max(x1, x2) < min_x or min(x1, x2) > max_x or max(y1, y2) < min_y or min(y1, y2) > max_y:
+            return False
+
+        if (min_x <= x1 <= max_x and min_y <= y1 <= max_y) or (min_x <= x2 <= max_x and min_y <= y2 <= max_y):
+            return True
+
+        def orientation(ax, ay, bx, by, cx, cy) -> float:
+            return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+
+        def on_segment(ax, ay, bx, by, cx, cy) -> bool:
+            return min(ax, bx) <= cx <= max(ax, bx) and min(ay, by) <= cy <= max(ay, by)
+
+        def segments_intersect(ax, ay, bx, by, cx, cy, dx, dy) -> bool:
+            o1 = orientation(ax, ay, bx, by, cx, cy)
+            o2 = orientation(ax, ay, bx, by, dx, dy)
+            o3 = orientation(cx, cy, dx, dy, ax, ay)
+            o4 = orientation(cx, cy, dx, dy, bx, by)
+
+            if o1 == 0 and on_segment(ax, ay, bx, by, cx, cy):
+                return True
+            if o2 == 0 and on_segment(ax, ay, bx, by, dx, dy):
+                return True
+            if o3 == 0 and on_segment(cx, cy, dx, dy, ax, ay):
+                return True
+            if o4 == 0 and on_segment(cx, cy, dx, dy, bx, by):
+                return True
+
+            return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
+
+        rect_edges = [
+            (min_x, min_y, max_x, min_y),
+            (max_x, min_y, max_x, max_y),
+            (max_x, max_y, min_x, max_y),
+            (min_x, max_y, min_x, min_y),
+        ]
+        return any(segments_intersect(x1, y1, x2, y2, rx1, ry1, rx2, ry2) for rx1, ry1, rx2, ry2 in rect_edges)
+
+    def _is_zone_layout_valid(
+        self,
+        center: Vector2D,
+        width: float,
+        height: float,
+        zone_type: ZoneType,
+        name: str | None = None
+    ) -> bool:
+        """统一校验区域与道路、现有区域是否冲突。"""
+        test_zone = Zone(
+            zone_type=zone_type,
+            center=center,
+            width=width,
+            height=height,
+            name=name,
+        )
+        return (
+            not self.zone_manager.check_overlap(test_zone)
+            and not self._check_road_overlap(test_zone)
+        )
     
     def _check_road_overlap(self, zone) -> bool:
         """检查区域是否与道路重叠。"""
@@ -554,6 +820,19 @@ class ZoningAgent(BaseAgent):
         for edge in network.edges.values():
             from_pos = edge.from_node.position
             to_pos = edge.to_node.position
+            expanded_buffer = max(18.0, self.buffer_distance)
+
+            if self._segment_intersects_rect(
+                from_pos.x,
+                from_pos.y,
+                to_pos.x,
+                to_pos.y,
+                zone_bounds[0] - expanded_buffer,
+                zone_bounds[1] - expanded_buffer,
+                zone_bounds[2] + expanded_buffer,
+                zone_bounds[3] + expanded_buffer,
+            ):
+                return True
             
             # 简单检查：道路端点是否在区域边界内（加缓冲）
             buffer = 15  # 道路半宽缓冲
@@ -572,7 +851,8 @@ class ZoningAgent(BaseAgent):
                 to_pos.x, to_pos.y
             )
             min_size = min(zone.width, zone.height)
-            if dist < buffer + min_size / 4:
+            lane_buffer = 3.5 * max(1, len(edge.lanes))
+            if dist < lane_buffer + max(buffer, expanded_buffer) + min_size / 4:
                 return True
         
         return False
@@ -594,6 +874,9 @@ class ZoningAgent(BaseAgent):
     def act(self, decision: dict[str, Any] | None) -> bool:
         """执行区域规划。"""
         if not decision or not self.environment:
+            return False
+
+        if not self._road_network_ready_for_zoning():
             return False
         
         action = decision.get('action')
@@ -673,7 +956,6 @@ class ZoningAgent(BaseAgent):
             
             # 添加到管理器
             self.zone_manager.add_zone(zone)
-            self.last_planning_time = self.environment.current_time
             self.total_zones_planned += 1
             
             # 记录历史
@@ -736,28 +1018,201 @@ class ZoningAgent(BaseAgent):
         """更新智能体状态。"""
         if not self.environment:
             return
-        
+
         current_time = self.environment.current_time
-        
-        # 定期执行规划
-        check_interval = 10
-        if int(current_time) % check_interval == 0 and int(current_time) > 0:
-            if not hasattr(self, '_last_planning_check') or self._last_planning_check != int(current_time):
-                self._last_planning_check = int(current_time)
+
+        # 按规划间隔批量补充区域，数量由人口与路网状态共同决定
+        if (
+            current_time > 0
+            and current_time - self.last_planning_time >= self.planning_interval
+            and self._road_network_ready_for_zoning()
+        ):
+            # 立即更新时间戳，防止规划失败后立即重试导致频繁请求LLM
+            self.last_planning_time = current_time
+            
+            batch_count = self._determine_zone_batch_count()
+            if batch_count <= 0:
+                return
                 
-                decision = self.decide()
-                if decision:
-                    success = self.act(decision)
-                    if success:
-                        stats = self.zone_manager.get_statistics()
-                        print(f"[ZoningAgent] 当前共 {stats['total_zones']} 个区域, "
-                              f"总人口: {stats['total_population']}")
-        
-        # 更新区域人口增长
+            # 城市规划是长期过程，每轮只做一个决策，避免短时间内大量LLM请求
+            # 批量规划改为分多轮执行，每轮间隔 planning_interval
+            decision = self.decide()
+            if decision and self.act(decision):
+                stats = self.zone_manager.get_statistics()
+                print(
+                    f"[ZoningAgent] 新增功能区成功，"
+                    f"当前共 {stats['total_zones']} 个区域, 总人口 {stats['total_population']}"
+                )
+            else:
+                print(f"[ZoningAgent] 本轮规划未产生有效区域，等待下一轮")
+
         for zone in self.zone_manager.zones.values():
             if zone.population < zone.target_population:
                 zone.grow_population(0.005)
-    
+
+    def _llm_determine_zone_batch_count(self) -> int | None:
+        """使用大模型根据人口与路网状态决定本轮新增区域数。"""
+        prompt = ""
+        try:
+            network_info = self._get_network_info()
+            population_stats = self._get_population_stats()
+            zone_stats = self.zone_manager.get_statistics()
+            planning_agent = self._get_road_planning_agent()
+            expansion_count = len(getattr(planning_agent, 'expansion_history', [])) if planning_agent else 0
+
+            prompt = f"""你是城市规划总控，需要决定这一轮应该新增多少个功能区域。
+当前状态：
+- 道路节点数: {network_info.get('nodes', 0)}
+- 道路边数: {network_info.get('edges', 0)}
+- 当前功能区数量: {zone_stats.get('total_zones', 0)}
+- 当前总人口: {population_stats.get('total_population', 0)}
+- 当前总容量: {population_stats.get('max_capacity', 0)}
+- 路网扩展次数: {expansion_count}
+- 各类功能区统计: {json.dumps(zone_stats.get('by_type', {}), ensure_ascii=False)}
+
+决策原则：
+1. 区域数量必须服从人口规模与道路承载能力，不能盲目增加。
+2. 若道路刚扩展且人口在增长，可以一轮增加多个区域。
+3. 若道路不足、人口低、现有区域已经较多，则应保守。
+4. 输出的 count 必须在 1 到 4 之间。
+只输出 JSON：
+{{
+  "count": 1,
+  "reason": "简短说明"
+}}"""
+
+            llm_manager = self._get_llm_manager()
+            if not llm_manager:
+                return None
+
+            response = llm_manager.request_sync_decision(prompt, timeout=10.0)
+            if not response:
+                self._archive_llm_decision("zone_batch_count", prompt, adopted=False, status="empty_response", summary="功能区批量规模决策")
+                return None
+
+            start = response.find('{')
+            end = response.rfind('}')
+            if start == -1 or end == -1:
+                self._archive_llm_decision("zone_batch_count", prompt, response=response, adopted=False, status="parse_failed", summary="功能区批量规模决策")
+                return None
+
+            result = json.loads(response[start:end+1])
+            self._archive_llm_decision(
+                "zone_batch_count",
+                prompt,
+                response=response,
+                parsed=result,
+                adopted=True,
+                status="success",
+                summary="功能区批量规模决策",
+            )
+            return int(result.get('count', 1))
+        except Exception as e:
+            self._archive_llm_decision(
+                "zone_batch_count",
+                prompt,
+                adopted=False,
+                status="error",
+                summary="功能区批量规模决策",
+                extra={"error": str(e)},
+            )
+            print(f"[ZoningAgent] LLM区域数量决策失败: {e}")
+            return None
+
+    def _llm_select_location_and_type(self, locations: list[dict]) -> dict[str, Any] | None:
+        """使用 LLM 选择位置和功能类型，并归档原始文本。"""
+        prompt = ""
+        try:
+            network_info = self._get_network_info()
+            total_pop = self.zone_manager.get_total_population()
+
+            zone_stats = {}
+            for zt in ZoneType:
+                count = len(self.zone_manager.get_zones_by_type(zt))
+                if count > 0:
+                    zone_stats[zt.name] = count
+
+            prompt = f"""你是一位城市规划专家。请为城市选择一个新功能区域的位置和类型。
+
+当前城市状态：
+- 道路节点数: {network_info['nodes']}
+- 当前总人口: {total_pop}
+- 已有区域: {zone_stats}
+
+候选位置（沿道路布局）：
+{json.dumps(locations[:10], ensure_ascii=False, indent=2)}
+
+规划原则：
+1. 住宅区优先贴近交通便利的道路，服务人口。
+2. 商业区优先靠近交叉口或主干道。
+3. 学校靠近住宅区。
+4. 医院要求交通便利且覆盖范围广。
+5. 公园靠近住宅区。
+6. 工业区可布置在相对边缘位置。
+
+只输出 JSON：
+{{
+  "selected_index": 0,
+  "zone_type": "RESIDENTIAL",
+  "reason": "选择理由",
+  "confidence": 0.8
+}}"""
+
+            llm_manager = self._get_llm_manager()
+            if not llm_manager:
+                return None
+
+            response = llm_manager.request_sync_decision(prompt, timeout=10.0)
+            if not response:
+                self._archive_llm_decision("zone_location_type", prompt, adopted=False, status="empty_response", summary="功能区选址与类型决策")
+                return None
+
+            decision = self._parse_llm_location_response(response, locations)
+            if decision:
+                parsed = {
+                    "zone_type": decision.get("zone_type").name if decision.get("zone_type") else None,
+                    "center": {
+                        "x": getattr(decision.get("center"), "x", None),
+                        "y": getattr(decision.get("center"), "y", None),
+                    },
+                    "width": decision.get("width"),
+                    "height": decision.get("height"),
+                    "reason": decision.get("reason"),
+                    "confidence": decision.get("confidence"),
+                    "edge_id": decision.get("edge_id"),
+                }
+                self._archive_llm_decision(
+                    "zone_location_type",
+                    prompt,
+                    response=response,
+                    parsed=parsed,
+                    adopted=True,
+                    status="success",
+                    summary="功能区选址与类型决策",
+                )
+                return decision
+
+            self._archive_llm_decision(
+                "zone_location_type",
+                prompt,
+                response=response,
+                adopted=False,
+                status="parse_failed",
+                summary="功能区选址与类型决策",
+            )
+        except Exception as e:
+            self._archive_llm_decision(
+                "zone_location_type",
+                prompt,
+                adopted=False,
+                status="error",
+                summary="功能区选址与类型决策",
+                extra={"error": str(e)},
+            )
+            print(f"[ZoningAgent] LLM选址失败: {e}")
+
+        return None
+
     def get_status(self) -> dict[str, Any]:
         """获取智能体状态。"""
         # 处理决策信息，确保可JSON序列化

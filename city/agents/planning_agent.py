@@ -1,8 +1,8 @@
 ﻿"""
-璺綉瑙勫垝鏅鸿兘浣?(Road Planning Agent) - 浜哄彛椹卞姩鍩庡競婕斿寲鐗?
+路网规划智能体(Road Planning Agent) - 人口驱动城市演化版
 
-鍩轰簬浜哄彛瀵嗗害鑷姩鎵╁睍璺綉鐨勬櫤鑳戒綋锛岄噰鐢ㄧ綉鏍肩姸甯冨眬閬垮厤闀挎潯鍖栥€?
-涓撴敞浜庨亾璺綉缁滄墿灞曪紝涓庡煄甯傝鍒掓櫤鑳戒綋鍗忓悓宸ヤ綔銆?
+基于人口密度自动扩展路网的智能体，采用网格状布局避免长条化。
+专注于道路网络扩展，与城市规划智能体协同工作。
 """
 
 from __future__ import annotations
@@ -24,22 +24,22 @@ if TYPE_CHECKING:
 
 class PopulationCityPlanner(BaseAgent):
     """
-    浜哄彛椹卞姩鐨勮矾缃戣鍒掓櫤鑳戒綋銆?
+    人口驱动的路网规划智能体。
     
-    鏍稿績鏈哄埗锛?
-    1. 姣忎釜鑺傜偣鏈変竴瀹氫汉鍙ｅ閲?
-    2. 杞﹁締浠ｈ〃浜哄彛/閫氬嫟鑰?
-    3. 褰撲汉鍙ｅ瘑搴﹁秴杩囬槇鍊硷紝鍩庡競鎵╁紶锛堟坊鍔犳柊鑺傜偣锛?
-    4. 鑷姩鍦∣D瀵逛箣闂寸敓鎴愰€氬嫟杞﹁締
-    5. 閲囩敤缃戞牸鐘跺竷灞€锛岄伩鍏嶅煄甯傞暱鏉″寲
+    核心机制：
+    1. 每个节点有一定人口容量
+    2. 车辆代表人口/通勤者
+    3. 当人口密度超过阈值，城市扩张（添加新节点）
+    4. 自动在OD对之间生成通勤车辆
+    5. 采用网格状布局，避免城市长条化
     
-    涓庡煄甯傝鍒掓櫤鑳戒綋(ZoningAgent)鍗忓悓宸ヤ綔锛岃矾缃戞墿寮犲悗鐢盳oningAgent瑙勫垝鍔熻兘鍖哄煙銆?
+    与城市规划智能体(ZoningAgent)协同工作，路网扩张后由ZoningAgent规划功能区域。
     
     Attributes:
-        population_per_node: 姣忎釜鑺傜偣鐨勪汉鍙ｅ閲?
-        current_population: 褰撳墠鎬讳汉鍙ｏ紙杞﹁締鏁帮級
-        expansion_threshold: 鎵╁紶闃堝€硷紙浜哄彛瀵嗗害锛?
-        auto_spawn_timer: 鑷姩鐢熸垚杞﹁締璁℃椂鍣?
+        population_per_node: 每个节点的人口容量
+        current_population: 当前总人口（车辆数）
+        expansion_threshold: 扩张阈值（人口密度）
+        auto_spawn_timer: 自动生成车辆计时器
     """
     
     def __init__(
@@ -56,43 +56,44 @@ class PopulationCityPlanner(BaseAgent):
     ):
         super().__init__(AgentType.TRAFFIC_PLANNER, environment, use_llm, enable_memory=enable_memory, memory_capacity=50)
         
-        # 浜哄彛绠＄悊
+        # 人口管理
         self.population_per_node = population_per_node
         self.expansion_threshold = expansion_threshold
         self.spawn_interval = spawn_interval
         
-        # 璺綉鎵╁睍闄愬埗
+        # 路网扩展限制
         self.max_nodes = max_nodes
         self.min_edge_length = min_edge_length
         self.max_edge_length = max_edge_length
         
-        # 鐘舵€?
+        # 状态
         self.auto_spawn_timer = 0.0
         self.last_expansion_time = 0.0
         self.expansion_cooldown = 30.0
         
-        # 缁熻
+        # 统计
         self.total_spawns = 0
         self.expansion_history: list[dict[str, Any]] = []
 
-        # ????????????????????
+        # 记录最近的扩展方向以避免重复
         self.recent_expansion_directions: list[str] = []
         self.direction_window = 6
         self._procedural_growth_config: dict[str, Any] | None = None
         
-        # LLM鍐崇瓥璁板綍锛堢敤浜庡墠绔睍绀猴級
+        # LLM决策记录（用于前端展示）
         self.last_decision: dict[str, Any] | None = None
+        self.llm_decision_archive: list[dict[str, Any]] = []
         
-        # 鍩庡競婕斿寲闃舵
+        # 城市演化阶段
         self.city_stage = 'initial'  # initial, developing, mature
         self.stage_thresholds = {
-            'initial': 4,      # 鍒濆闃舵锛?x2缃戞牸
-            'developing': 9,   # 鍙戝睍闃舵锛?x3缃戞牸
-            'mature': 16       # 鎴愮啛闃舵锛?x4缃戞牸
+            'initial': 4,      # 初阶段：2x2网格
+            'developing': 9,   # 发展阶段：3x3网格
+            'mature': 16       # 成熟阶段：4x4网格
         }
         
     def get_population_density(self) -> float:
-        """璁＄畻褰撳墠浜哄彛瀵嗗害 (0.0 - 1.0)銆"""
+        """计算当前人口密度 (0.0 - 1.0)。"""
         if not self.environment:
             return 0.0
         
@@ -106,7 +107,7 @@ class PopulationCityPlanner(BaseAgent):
         return current_vehicles / max_capacity if max_capacity > 0 else 0.0
     
     def get_city_stats(self) -> dict[str, Any]:
-        """鑾峰彇鍩庡競缁熻淇℃伅銆"""
+        """获取城市统计信息。"""
         if not self.environment:
             return {}
         
@@ -115,7 +116,7 @@ class PopulationCityPlanner(BaseAgent):
         max_capacity = num_nodes * self.population_per_node
         density = self.get_population_density()
         
-        # 璁＄畻缃戠粶褰㈢姸鎸囨爣
+        # 计算网络形状指标
         network_shape = self._analyze_network_shape()
         
         return {
@@ -132,7 +133,7 @@ class PopulationCityPlanner(BaseAgent):
         }
     
     def _analyze_network_shape(self) -> dict[str, Any]:
-        """鍒嗘瀽缃戠粶褰㈢姸锛岄伩鍏嶉暱鏉″寲銆"""
+        """分分网络形状，避免长条化。"""
         if not self.environment or len(self.environment.road_network.nodes) < 2:
             return {'aspect_ratio': 1.0, 'shape': 'balanced'}
         
@@ -148,7 +149,7 @@ class PopulationCityPlanner(BaseAgent):
         else:
             aspect_ratio = width / height
         
-        # 鍒ゆ柇褰㈢姸
+        # 判断形状
         if aspect_ratio > 2:
             shape = 'too_wide'
         elif aspect_ratio < 0.5:
@@ -164,7 +165,7 @@ class PopulationCityPlanner(BaseAgent):
         }
     
     def perceive(self) -> dict[str, Any]:
-        """鎰熺煡鍩庡競鐘舵€併€"""
+        """感知城市状态"""
         return {
             'city_stats': self.get_city_stats(),
             'current_time': self.environment.current_time if self.environment else 0
@@ -172,7 +173,7 @@ class PopulationCityPlanner(BaseAgent):
     
     def decide(self) -> dict[str, Any] | None:
         """
-        鍐崇瓥锛氭牴鎹汉鍙ｅ瘑搴﹀喅瀹氭槸鍚︽墿寮犲煄甯傘€?
+        决策：根据人口密度决定是否扩张城市。
         """
         if not self.environment:
             return None
@@ -190,15 +191,15 @@ class PopulationCityPlanner(BaseAgent):
         if self.has_memory():
             self.get_memory().set_working_memory('latest_city_stats', stats)
         
-        # 妫€鏌ュ喎鍗存椂闂?
+        # 检查冷却时间
         if current_time - self.last_expansion_time < self.expansion_cooldown:
             return None
         
-        # 妫€鏌ユ槸鍚﹀凡杈炬渶澶ц妯?
+        # 检查是否已达最大规模
         if stats['nodes'] >= self.max_nodes:
             return None
         
-        # 浜哄彛瀵嗗害瓒呰繃闃堝€硷紝闇€瑕佹墿寮?
+        # 人口密度超过阈值，需要扩张
         if stats['density'] >= self.expansion_threshold:
             expansion_plan = self._plan_expansion()
             if expansion_plan:
@@ -221,7 +222,7 @@ class PopulationCityPlanner(BaseAgent):
         return None
     
     def _plan_expansion(self) -> dict[str, Any] | None:
-        """瑙勫垝鍩庡競鎵╁紶鏂规锛屼娇鐢↙LM鍐崇瓥鏈€浣充綅缃拰杩炴帴鏂瑰紡銆"""
+        """规划城市扩张（使用LLM决策最优位置和连接方式）"""
         if not self.environment:
             return None
         
@@ -229,7 +230,7 @@ class PopulationCityPlanner(BaseAgent):
         if len(network.nodes) == 0:
             return None
         
-        # 鏋勫缓缃戠粶鐘舵€佷俊鎭?
+        # 分析网络状态信息
         nodes_info = []
         for node in network.nodes.values():
             load = len(node.incoming_edges) + len(node.outgoing_edges)
@@ -241,19 +242,19 @@ class PopulationCityPlanner(BaseAgent):
                 'load': load
             })
         
-        # 璁＄畻缃戠粶杈圭晫鍜屽舰鐘?
+        # 计算网络边界和中心状态
         positions = [n.position for n in network.nodes.values()]
         min_x, max_x = min(p.x for p in positions), max(p.x for p in positions)
         min_y, max_y = min(p.y for p in positions), max(p.y for p in positions)
         center_x = (min_x + max_x) / 2
         center_y = (min_y + max_y) / 2
         
-        # 璁＄畻褰㈢姸鎸囨爣
+        # 计算形状指标
         width = max_x - min_x
         height = max_y - min_y
         aspect_ratio = width / height if height > 0 else 1.0
         
-        # 纭畾浼樺厛鎵╁睍鏂瑰悜锛堥伩鍏嶉暱鏉″寲锛?
+        # 确定优先扩张方向（避免长条化）
         if aspect_ratio > 1.5:
             preferred_direction = 'vertical'
         elif aspect_ratio < 0.67:
@@ -267,56 +268,67 @@ class PopulationCityPlanner(BaseAgent):
                 center_x, center_y, aspect_ratio, preferred_direction
             )
         else:
-            return self._rule_plan_expansion(
+            # 不使用LLM，直接规则规划并记录
+            rule_plan = self._rule_plan_expansion(
                 nodes_info, min_x, max_x, min_y, max_y,
                 center_x, center_y, aspect_ratio, preferred_direction
             )
+            if rule_plan:
+                self._archive_llm_decision(
+                    category="road_expansion",
+                    prompt="[规则规划] LLM已禁用，使用规则规划",
+                    parsed=rule_plan,
+                    adopted=True,
+                    status="success",
+                    summary="道路扩展选址（规则规划）",
+                    extra={"source": "rule", "reason": "llm_disabled"},
+                )
+            return rule_plan
     
     def _llm_plan_expansion(
         self, nodes_info: list, min_x: float, max_x: float, 
         min_y: float, max_y: float, center_x: float, center_y: float,
         aspect_ratio: float, preferred_direction: str
     ) -> dict[str, Any] | None:
-        """浣跨敤LLM瑙勫垝鍩庡競鎵╁紶銆"""
-        try:
-            prompt = f"""浣犳槸涓€浣嶅煄甯傝鍒掍笓瀹躲€傚熀浜庡綋鍓嶅煄甯傜綉缁滅姸鎬侊紝鍐冲畾鏂板尯鍩熺殑浣嶇疆鍜岃繛鎺ユ柟寮忋€?
+        """使用LLM规划城市扩张。"""
+        prompt = f"""你是一位城市规划专家。基于当前城市网络状态，决定新区域的位置和连接方式。
 
-## 褰撳墠缃戠粶鐘舵€?
-- 鑺傜偣鏁? {len(nodes_info)}
-- 缃戠粶鑼冨洿: X[{min_x:.0f}, {max_x:.0f}], Y[{min_y:.0f}, {max_y:.0f}]
-- 涓績鐐? ({center_x:.0f}, {center_y:.0f})
-- 瀹介珮姣? {aspect_ratio:.2f}
-- 浜哄彛瀵嗗害: {self.get_population_density()*100:.0f}%
+## 当前网络状态
+- 节点数 {len(nodes_info)}
+- 网络范围: X[{min_x:.0f}, {max_x:.0f}], Y[{min_y:.0f}, {max_y:.0f}]
+- 中心点 ({center_x:.0f}, {center_y:.0f})
+- 宽高比 {aspect_ratio:.2f}
+- 人口密度: {self.get_population_density()*100:.0f}%
 
-## 褰㈢姸鍒嗘瀽
-褰撳墠鍩庡競缃戠粶褰㈢姸: {preferred_direction}
-- 'vertical': 缃戠粶澶锛屽簲浼樺厛鍚戜笂/涓嬫墿灞?
-- 'horizontal': 缃戠粶澶珮锛屽簲浼樺厛鍚戝乏/鍙虫墿灞? 
-- 'balanced': 缃戠粶鍧囪　锛屽彲鍚戜换浣曟柟鍚戞墿灞?
+## 形状分析
+当前城市网络形状: {preferred_direction}
+- 'vertical': 网络太宽，应优先向上/下扩展
+- 'horizontal': 网络太高，应优先向左/右扩展 
+- 'balanced': 网络均衡，可向任何方向扩展
 
-## 鐜版湁鑺傜偣淇℃伅
+## 现有节点信息
 {json.dumps(nodes_info[:10], ensure_ascii=False, indent=2)}
 
-## 瑙勫垝绾︽潫
-1. **閬垮厤闀挎潯鍖?*: 鏍规嵁褰㈢姸鍒嗘瀽锛屼紭鍏堝湪缂哄皯瑕嗙洊鐨勬柟鍚戞墿灞?
-2. **缃戞牸甯冨眬**: 鏂拌妭鐐瑰簲涓庣幇鏈夎妭鐐瑰舰鎴愯繎浼肩綉鏍肩殑甯冨眬
-3. **鍙揪鎬?*: 鏂拌妭鐐瑰繀椤讳笌鑷冲皯2涓幇鏈夎妭鐐硅繛鎺ワ紝纭繚璺綉杩為€?
-4. **浼樺厛杩炴帴**: 浼樺厛杩炴帴璐熻浇杈冧綆锛堣繛鎺ヨ竟灏戯級鐨勮妭鐐癸紝鍧囪　缃戠粶
-5. **璺濈鎺у埗**: 鏂拌妭鐐逛笌鏈€杩戠幇鏈夎妭鐐硅窛绂荤害250-350绫?
+## 规划约束
+1. **避免长条化**: 根据形状分析，优先在较少重叠的方向扩展
+2. **网格布局**: 新节点位置应与现有点保持接近网格状布局
+3. **可达性**: 新节点必须与至少2个现有点相连接，确保路网连通
+4. **优先连接**: 优先连接负载较低的节点，平衡网络
+5. **距离控制**: 新节点应与最远的现有点距离250-350米
 
-## 杈撳嚭鏍煎紡
-璇疯繑鍥濲SON鏍煎紡鍐崇瓥:
+## 输出格式
+请返回JSON格式决策:
 {{
-    "new_node_x": 鍧愭爣x锛堟暣鏁帮級,
-    "new_node_y": 鍧愭爣y锛堟暣鏁帮級,
-    "connect_to": ["鑺傜偣ID1", "鑺傜偣ID2"],
-    "expansion_direction": "鎵╁睍鏂瑰悜鎻忚堪",
-    "connect_reason": "閫夋嫨杩欎簺杩炴帴鐨勭悊鐢?,
-    "shape_consideration": "濡備綍鏀瑰杽缃戠粶褰㈢姸",
-    "reason": "鏁翠綋鍐崇瓥鐞嗙敱"
+    "new_node_x": 坐标x（整数）,
+    "new_node_y": 坐标y（整数）,
+    "connect_to": ["节点ID1", "节点ID2"],
+    "expansion_direction": "扩展方向描述",
+    "connect_reason": "选择这些连接的理由",",
+    "shape_consideration": "如何改善网络形状",
+    "reason": "整体决策理由"
 }}
 """
-            
+        try:
             llm_manager = self._get_llm_manager()
             if llm_manager:
                 response = llm_manager.request_sync_decision(prompt, timeout=15.0)
@@ -325,41 +337,235 @@ class PopulationCityPlanner(BaseAgent):
                         response, nodes_info, center_x, center_y
                     )
                     if plan:
-                        # ?????????????????
+                        # 检查新节点位置是否过于靠近现有节点（避免重叠）
                         try:
                             pos_data = plan.get('new_node_position', {})
                             x = float(pos_data.get('x', center_x))
                             y = float(pos_data.get('y', center_y))
-                            margin = 10.0
-                            in_bounds = (
-                                (min_x - margin) <= x <= (max_x + margin)
-                                and (min_y - margin) <= y <= (max_y + margin)
-                            )
-                            if in_bounds:
-                                print("[城市扩张] LLM 规划点位于现有边界附近，回退规则规划")
+                            
+                            # 检查是否与现有节点位置重叠（距离小于30米）
+                            min_distance_to_existing = float('inf')
+                            for node in nodes_info:
+                                dist = ((x - node['x']) ** 2 + (y - node['y']) ** 2) ** 0.5
+                                min_distance_to_existing = min(min_distance_to_existing, dist)
+                            
+                            # 只有当新节点与现有节点重叠（距离小于30米）时才拒绝
+                            if min_distance_to_existing < 30.0:
+                                self._archive_llm_decision(
+                                    category="road_expansion",
+                                    prompt=prompt,
+                                    response=response,
+                                    parsed=plan,
+                                    adopted=False,
+                                    status="fallback",
+                                    summary="道路扩展选址",
+                                    extra={"fallback_reason": "too_close_to_existing_node", "distance": min_distance_to_existing},
+                                )
+                                print(f"[城市扩张] LLM 规划点与现有节点距离{min_distance_to_existing:.1f}m过近，回退规则规划")
+                                rule_plan = self._rule_plan_expansion(
+                                    nodes_info, min_x, max_x, min_y, max_y,
+                                    center_x, center_y, aspect_ratio, preferred_direction
+                                )
+                                # 记录规则规划决策
+                                if rule_plan:
+                                    self._archive_llm_decision(
+                                        category="road_expansion",
+                                        prompt="[规则回退] " + prompt[:200] + "...",
+                                        parsed=rule_plan,
+                                        adopted=True,
+                                        status="success",
+                                        summary="道路扩展选址（规则规划）",
+                                        extra={"source": "rule", "fallback_from": "llm_bounds_check"},
+                                    )
+                                return rule_plan
                             else:
-                                # ?????????
+                                # 检查方向重复
                                 plan_direction = plan.get('expansion_direction')
                                 recent = self.recent_expansion_directions
                                 if plan_direction and len(recent) >= 2 and recent[-1] == plan_direction and recent[-2] == plan_direction:
+                                    self._archive_llm_decision(
+                                        category="road_expansion",
+                                        prompt=prompt,
+                                        response=response,
+                                        parsed=plan,
+                                        adopted=False,
+                                        status="fallback",
+                                        summary="道路扩展选址",
+                                        extra={"fallback_reason": "repeated_direction"},
+                                    )
                                     print("[城市扩张] 连续同方向扩张，回退规则规划")
+                                    rule_plan = self._rule_plan_expansion(
+                                        nodes_info, min_x, max_x, min_y, max_y,
+                                        center_x, center_y, aspect_ratio, preferred_direction
+                                    )
+                                    # 记录规则规划决策
+                                    if rule_plan:
+                                        self._archive_llm_decision(
+                                            category="road_expansion",
+                                            prompt="[规则回退] " + prompt[:200] + "...",
+                                            parsed=rule_plan,
+                                            adopted=True,
+                                            status="success",
+                                            summary="道路扩展选址（规则规划）",
+                                            extra={"source": "rule", "fallback_from": "llm_direction_repeat"},
+                                        )
+                                    return rule_plan
                                 else:
+                                    self._archive_llm_decision(
+                                        category="road_expansion",
+                                        prompt=prompt,
+                                        response=response,
+                                        parsed=plan,
+                                        adopted=True,
+                                        status="success",
+                                        summary="道路扩展选址",
+                                    )
                                     return plan
                         except Exception:
-                            # ???????????
+                            self._archive_llm_decision(
+                                category="road_expansion",
+                                prompt=prompt,
+                                response=response,
+                                parsed=plan,
+                                adopted=False,
+                                status="fallback",
+                                summary="道路扩展选址",
+                                extra={"fallback_reason": "post_validation_exception"},
+                            )
                             print("[城市扩张] LLM 结果不可用，回退规则规划")
+                            rule_plan = self._rule_plan_expansion(
+                                nodes_info, min_x, max_x, min_y, max_y,
+                                center_x, center_y, aspect_ratio, preferred_direction
+                            )
+                            if rule_plan:
+                                self._archive_llm_decision(
+                                    category="road_expansion",
+                                    prompt="[规则回退] " + prompt[:200] + "...",
+                                    parsed=rule_plan,
+                                    adopted=True,
+                                    status="success",
+                                    summary="道路扩展选址（规则规划）",
+                                    extra={"source": "rule", "fallback_from": "llm_validation_exception"},
+                                )
+                            return rule_plan
+                    else:
+                        self._archive_llm_decision(
+                            category="road_expansion",
+                            prompt=prompt,
+                            response=response,
+                            parsed=None,
+                            adopted=False,
+                            status="parse_failed",
+                            summary="道路扩展选址",
+                        )
+                        print("[城市扩张] LLM 结果解析失败，回退规则规划")
+                        rule_plan = self._rule_plan_expansion(
+                            nodes_info, min_x, max_x, min_y, max_y,
+                            center_x, center_y, aspect_ratio, preferred_direction
+                        )
+                        if rule_plan:
+                            self._archive_llm_decision(
+                                category="road_expansion",
+                                prompt="[规则回退] " + prompt[:200] + "...",
+                                parsed=rule_plan,
+                                adopted=True,
+                                status="success",
+                                summary="道路扩展选址（规则规划）",
+                                extra={"source": "rule", "fallback_from": "llm_parse_failed"},
+                            )
+                        return rule_plan
+                else:
+                    self._archive_llm_decision(
+                        category="road_expansion",
+                        prompt=prompt,
+                        response=None,
+                        parsed=None,
+                        adopted=False,
+                        status="empty_response",
+                        summary="道路扩展选址",
+                    )
+                    print("[城市扩张] LLM 无响应，回退规则规划")
+                    rule_plan = self._rule_plan_expansion(
+                        nodes_info, min_x, max_x, min_y, max_y,
+                        center_x, center_y, aspect_ratio, preferred_direction
+                    )
+                    if rule_plan:
+                        self._archive_llm_decision(
+                            category="road_expansion",
+                            prompt="[规则回退] 原LLM请求失败",
+                            parsed=rule_plan,
+                            adopted=True,
+                            status="success",
+                            summary="道路扩展选址（规则规划）",
+                            extra={"source": "rule", "fallback_from": "llm_empty_response"},
+                        )
+                    return rule_plan
         except Exception as e:
+            self._archive_llm_decision(
+                category="road_expansion",
+                prompt=prompt if 'prompt' in locals() else "",
+                response=None,
+                parsed=None,
+                adopted=False,
+                status="error",
+                summary="道路扩展选址",
+                extra={"error": str(e)},
+            )
             print(f"[城市扩张] LLM 规划失败: {e}")
         
-        return self._rule_plan_expansion(
+        # 最终回退到规则规划
+        rule_plan = self._rule_plan_expansion(
             nodes_info, min_x, max_x, min_y, max_y,
             center_x, center_y, aspect_ratio, preferred_direction
         )
+        if rule_plan:
+            self._archive_llm_decision(
+                category="road_expansion",
+                prompt="[规则回退] 原LLM请求异常",
+                parsed=rule_plan,
+                adopted=True,
+                status="success",
+                summary="道路扩展选址（规则规划）",
+                extra={"source": "rule", "fallback_from": "llm_exception"},
+            )
+        return rule_plan
     
+    def _archive_llm_decision(
+        self,
+        category: str,
+        prompt: str,
+        response: str | None = None,
+        parsed: dict[str, Any] | None = None,
+        adopted: bool | None = None,
+        status: str = "success",
+        summary: str | None = None,
+        extra: dict[str, Any] | None = None
+    ) -> None:
+        """归档路网规划相关的大模型决策文本。"""
+        timestamp = self.environment.current_time if self.environment else 0.0
+        record = {
+            "id": f"{self.agent_id}_{category}_{int(timestamp * 1000)}_{len(self.llm_decision_archive) + 1}",
+            "timestamp": timestamp,
+            "agent_id": self.agent_id,
+            "agent_type": "planning",
+            "category": category,
+            "summary": summary or "道路扩展决策",
+            "prompt": prompt,
+            "response": response or "",
+            "parsed_decision": parsed or {},
+            "adopted": adopted,
+            "status": status,
+        }
+        if extra:
+            record["extra"] = extra
+        self.llm_decision_archive.append(record)
+        if len(self.llm_decision_archive) > 300:
+            self.llm_decision_archive = self.llm_decision_archive[-300:]
+
     def _parse_llm_expansion_plan(
         self, response: str, nodes_info: list, center_x: float, center_y: float
     ) -> dict[str, Any] | None:
-        """瑙ｆ瀽LLM鐨勬墿寮犺鍒掑搷搴斻€"""
+        """解析LLM的扩张计划响应"""
         try:
             start = response.find('{')
             end = response.rfind('}')
@@ -368,7 +574,7 @@ class PopulationCityPlanner(BaseAgent):
             
             plan = json.loads(response[start:end+1])
             
-            # 楠岃瘉鑺傜偣ID
+            # 验证节点ID
             connect_to = plan.get('connect_to', [])
             valid_nodes = [n['id'] for n in nodes_info]
             valid_connections = [nid for nid in connect_to if nid in valid_nodes]
@@ -391,11 +597,11 @@ class PopulationCityPlanner(BaseAgent):
             }
             
         except Exception as e:
-            print(f"[城市扩张] 解析 LLM 响应失败: {e}")
+            print(f"[城市扩张] 解分 LLM 响应失败: {e}")
             return None
     
     def _get_zones_for_expansion_planning(self) -> list:
-        """鑾峰彇鐜版湁鍖哄煙鍒楄〃鐢ㄤ簬鎵╁紶瑙勫垝銆"""
+        """获取环版有区域列表用ㄤ于扩展张规划。"""
         zoning_agent = self._get_zoning_agent()
         if zoning_agent and hasattr(zoning_agent, 'zone_manager'):
             return list(zoning_agent.zone_manager.zones.values())
@@ -450,7 +656,7 @@ class PopulationCityPlanner(BaseAgent):
         preferred_direction: str,
     ) -> list[dict[str, Any]]:
         """
-        参考 procedural_city_generation 的 grid/organic/radial growth 规则生成候选点。
+        参考 procedural_city_generation 的 grid/organic/radial growth 方则生成候选点。
         """
         if not nodes_info:
             return []
@@ -572,20 +778,20 @@ class PopulationCityPlanner(BaseAgent):
         self, nodes_info: list, grid_size: float, preferred_direction: str
     ) -> list:
         """
-        鎵惧埌鎵╁紶鍊欓€変綅缃?- 涓ユ牸浠庡綋鍓嶆渶澶栧洿鍚戝鎵╁睍銆?
+        扩惧埌扩展张值欓変綅网?- 涓否牸浠庡体鍓嶆要最栧洿否戝扩展展。?
         
-        鍙€冭檻鍦ㄥ綋鍓嶈矾缃戞渶澶栧洿涔嬪鐨勪綅缃紝纭繚鍩庡競鍚戝鐢熼暱銆?
+        口冭檻鍦ㄥ体鍓嶈矾网戞要最栧洿涔嬪鐨勪綅网）确繚城市否戝用熼暱。?
         """
         candidates = []
         
-        # 鎵惧埌鏈€澶栧洿鐨勫潗鏍?
+        # 扩惧埌最大栧洿鐨划潗标?
         leftmost_x = min(n['x'] for n in nodes_info)
         rightmost_x = max(n['x'] for n in nodes_info)
         topmost_y = min(n['y'] for n in nodes_info)
         bottommost_y = max(n['y'] for n in nodes_info)
         
-        # 鍙湪鏈€澶栧洿涔嬪娣诲姞鍊欓€変綅缃?
-        # 鍚戝乏鎵╁睍 - 鍦ㄦ渶宸︿晶涔嬪
+        # 口在最大栧洿涔嬪添诲姞值欓変綅网?
+        # 向左扩展展 - 鍦ㄦ要作︿晶涔嬪
         leftmost_nodes = [n for n in nodes_info if abs(n['x'] - leftmost_x) < 10]
         for n in leftmost_nodes:
             new_x = leftmost_x - grid_size
@@ -598,7 +804,7 @@ class PopulationCityPlanner(BaseAgent):
                 'type': 'grid_outward'
             })
         
-        # 鍚戝彸鎵╁睍 - 鍦ㄦ渶鍙充晶涔嬪
+        # 向右扩展展 - 鍦ㄦ要口位晶涔嬪
         rightmost_nodes = [n for n in nodes_info if abs(n['x'] - rightmost_x) < 10]
         for n in rightmost_nodes:
             new_x = rightmost_x + grid_size
@@ -611,7 +817,7 @@ class PopulationCityPlanner(BaseAgent):
                 'type': 'grid_outward'
             })
         
-        # 鍚戜笂鎵╁睍 - 鍦ㄦ渶涓婃柟涔嬪
+        # 向上扩展展 - 鍦ㄦ要涓婃式涔嬪
         topmost_nodes = [n for n in nodes_info if abs(n['y'] - topmost_y) < 10]
         for n in topmost_nodes:
             new_y = topmost_y - grid_size
@@ -624,7 +830,7 @@ class PopulationCityPlanner(BaseAgent):
                 'type': 'grid_outward'
             })
         
-        # 鍚戜笅鎵╁睍 - 鍦ㄦ渶涓嬫柟涔嬪
+        # 向下扩展展 - 鍦ㄦ要涓嬫式涔嬪
         bottommost_nodes = [n for n in nodes_info if abs(n['y'] - bottommost_y) < 10]
         for n in bottommost_nodes:
             new_y = bottommost_y + grid_size
@@ -640,22 +846,22 @@ class PopulationCityPlanner(BaseAgent):
         return candidates
     
     def _line_intersects_zone(self, x1: float, y1: float, x2: float, y2: float, zone) -> bool:
-        """妫€鏌ョ嚎娈垫槸鍚︿笌鍖哄煙鐩镐氦锛堣€冭檻閬撹矾缂撳啿锛夈€"""
-        road_buffer = 30  # 閬撹矾鍗婂 + 瀹夊叏璺濈
+        """检查ョ嚎娈垫是否︿与区域鐩镐氦：进冭檻避撹矾缂撳啿：夈"""
+        road_buffer = 30  # 避撹矾却婂 + 定夊叏距离
         
-        # 鎵╁睍鍖哄煙杈圭晫浠ュ寘鍚亾璺紦鍐?
+        # 扩展展区域边界和浠冷寘否于路紦决?
         zone_min_x = zone.center.x - zone.width / 2 - road_buffer
         zone_max_x = zone.center.x + zone.width / 2 + road_buffer
         zone_min_y = zone.center.y - zone.height / 2 - road_buffer
         zone_max_y = zone.center.y + zone.height / 2 + road_buffer
         
-        # 蹇€熸鏌ワ細濡傛灉涓や釜绔偣閮藉湪鍖哄煙鍚屼竴渚э紝涓嶄細鐩镐氦
+        # 蹇拟查ワ细濡傛灉涓や釜绔偣閮藉在区域否优一渚э）涓尖细鐩镐氦
         if (x1 < zone_min_x and x2 < zone_min_x) or (x1 > zone_max_x and x2 > zone_max_x):
             return False
         if (y1 < zone_min_y and y2 < zone_min_y) or (y1 > zone_max_y and y2 > zone_max_y):
             return False
         
-        # 浣跨敤 Liang-Barsky 绠楁硶妫€鏌ョ嚎娈典笌鐭╁舰鐩镐氦
+        # 优跨敤 Liang-Barsky 管楁硶检查ョ嚎娈典与鐭展心鐩镐氦
         dx = x2 - x1
         dy = y2 - y1
         
@@ -684,15 +890,15 @@ class PopulationCityPlanner(BaseAgent):
         self, from_node, to_node, zones: list
     ) -> list[dict] | None:
         """
-        瀵绘壘缁曡繃鍔熻兘鍖哄煙鐨勮矾寰勶紙鎶樼嚎璺緞锛夈€?
+        密绘壘络曡繃功能区域鐨勮矾寰勶紙鎶樼嚎路緞：夈?
         
-        杩斿洖璺緞涓婄殑涓棿鐐瑰垪琛紙涓嶅寘鍚捣鐐瑰拰缁堢偣锛夈€?
-        璺緞娌跨潃鍖哄煙杈圭紭璧般€?
+        返回路緞涓婄的涓棿点方垪琛紙涓嶅寘否捣点方和络堢偣：夈?
+        路緞娌跨潃区域边界紭璧般?
         """
         x1, y1 = from_node.position.x, from_node.position.y
         x2, y2 = to_node.position.x, to_node.position.y
         
-        # 妫€鏌ョ洿鎺ヨ繛鎺ユ槸鍚︿細绌胯繃鍖哄煙
+        # 检查ョ洿鎺ヨ繛鎺否是否︿细绌胯繃区域
         intersects = False
         for zone in zones:
             if self._line_intersects_zone(x1, y1, x2, y2, zone):
@@ -700,11 +906,11 @@ class PopulationCityPlanner(BaseAgent):
                 break
         
         if not intersects:
-            # 鐩存帴杩炴帴涓嶄細绌胯繃鍖哄煙
+            # 鐩却帴连接涓尖细绌胯繃区域
             return []
         
-        # 闇€瑕佺粫琛岋紝娌跨潃鍖哄煙杈圭紭璧?
-        # 鎵惧埌闇€瑕佺粫琛岀殑鍖哄煙
+        # 需要佺粫琛岋）娌跨潃区域边界紭璧?
+        # 扩惧埌需要佺粫琛岀的区域
         blocking_zones = []
         for zone in zones:
             if self._line_intersects_zone(x1, y1, x2, y2, zone):
@@ -713,45 +919,45 @@ class PopulationCityPlanner(BaseAgent):
         if not blocking_zones:
             return []
         
-        # 绠€鍗曠瓥鐣ワ細娌跨潃闃绘尅鍖哄煙鐨勮竟缂樿蛋
-        # 閫夋嫨鏈€杩戠殑闃绘尅鍖哄煙锛屼粠鍏惰竟缂樼粫琛?
+        # 管却曠略鐣ワ细娌跨潃闃绘尅区域鐨勮竟缂樿蛋
+        # 选择最过戠的闃绘尅区域：优粠鍏惰竟缂樼粫琛?
         nearest_zone = min(blocking_zones, 
             key=lambda z: ((z.center.x - (x1+x2)/2)**2 + (z.center.y - (y1+y2)/2)**2))
         
         road_buffer = 40
         
-        # 鍖哄煙杈圭晫锛堝惈閬撹矾缂撳啿锛?
+        # 区域边界和：堝惈避撹矾缂撳啿：?
         z_min_x = nearest_zone.center.x - nearest_zone.width / 2 - road_buffer
         z_max_x = nearest_zone.center.x + nearest_zone.width / 2 + road_buffer
         z_min_y = nearest_zone.center.y - nearest_zone.height / 2 - road_buffer
         z_max_y = nearest_zone.center.y + nearest_zone.height / 2 + road_buffer
         
-        # 鍒ゆ柇浠庡摢涓柟鍚戠粫琛?
-        # 姣旇緝涓ょ缁曡鏂规鐨勭粫琛岃窛绂?
+        # 判断浠庡摢涓式否戠粫琛?
+        # 比较涓ょ络曡新方鐨勭粫琛岃窛绂?
         
-        # 鏂规1锛氫粠涓婃柟/涓嬫柟缁曡锛堟按骞虫柟鍚戣繛鎺ワ級
+        # 新方1：氫粠涓婃式/涓嬫式络曡：堟按骞决式否戣繛鎺ワ級
         if abs(x2 - x1) > abs(y2 - y1):
-            # 姘村钩杩炴帴锛屼粠涓婃柟鎴栦笅鏂圭粫琛?
+            # 姘村钩连接：优粠涓婃式我栦笅新界粫琛?
             mid_x = (x1 + x2) / 2
             
-            # 璁＄畻涓や釜缁曡鏂规鐨勪唬浠?
-            # 浠庝笂鏂圭粫琛?
+            # 计算涓や釜络曡新方鐨勪唬浠?
+            # 浠庝笂新界粫琛?
             path_top = [
                 {'x': mid_x, 'y': z_min_y, 'type': 'corner'},
             ]
-            # 浠庝笅鏂圭粫琛?
+            # 浠庝笅新界粫琛?
             path_bottom = [
                 {'x': mid_x, 'y': z_max_y, 'type': 'corner'},
             ]
             
-            # 閫夋嫨缁曡璺濈鏇寸煭鐨勬柟妗?
+            # 选择络曡距离鏇寸煭鐨勬式免?
             dist_via_top = abs(y1 - z_min_y) + abs(z_min_y - y2)
             dist_via_bottom = abs(y1 - z_max_y) + abs(z_max_y - y2)
             
             return path_top if dist_via_top < dist_via_bottom else path_bottom
         
         else:
-            # 鍨傜洿杩炴帴锛屼粠宸︿晶鎴栧彸渚х粫琛?
+            # 鍨傜洿连接：优粠作︿晶我栧彸渚х粫琛?
             mid_y = (y1 + y2) / 2
             
             # 浠庡乏渚х粫琛?
@@ -763,7 +969,7 @@ class PopulationCityPlanner(BaseAgent):
                 {'x': z_max_x, 'y': mid_y, 'type': 'corner'},
             ]
             
-            # 閫夋嫨缁曡璺濈鏇寸煭鐨勬柟妗?
+            # 选择络曡距离鏇寸煭鐨勬式免?
             dist_via_left = abs(x1 - z_min_x) + abs(z_min_x - x2)
             dist_via_right = abs(x1 - z_max_x) + abs(z_max_x - x2)
             
@@ -774,12 +980,12 @@ class PopulationCityPlanner(BaseAgent):
         min_y: float, max_y: float, center_x: float, center_y: float,
         aspect_ratio: float, preferred_direction: str
     ) -> dict[str, Any] | None:
-        """浣跨敤瑙勫垯瑙勫垝鍩庡競鎵╁紶锛屾柊鑺傜偣鍦ㄥ鍥达紝閬撹矾娌垮尯鍩熻竟缂樿蛋锛堟姌绾匡級銆"""
-        # 鏀堕泦鎵€鏈夌幇鏈夌殑X鍜孻鍧愭爣
+        """优跨敤规划则规划城市扩展张：屾柊节点鍦ㄥ鍥达）避撹矾娌垮尯城熻竟缂樿蛋：堟姌绾匡級。"""
+        # 鏀堕泦扩最夌幇最夌的X和孻坐标
         existing_x = sorted(set(n['x'] for n in nodes_info))
         existing_y = sorted(set(n['y'] for n in nodes_info))
         
-        # 璁＄畻缃戞牸闂磋窛
+        # 计算网戞牸间磋窛
         x_gaps = [existing_x[i+1] - existing_x[i] for i in range(len(existing_x)-1)]
         y_gaps = [existing_y[i+1] - existing_y[i] for i in range(len(existing_y)-1)]
         grid_size = 300
@@ -788,13 +994,13 @@ class PopulationCityPlanner(BaseAgent):
         elif y_gaps:
             grid_size = max(250, min(350, sum(y_gaps) / len(y_gaps)))
         
-        # 璁＄畻褰撳墠杈圭晫锛堝湪鎵€鏈夊垎鏀兘闇€瑕侊級
+        # 计算当前边界和：堝在扩最夊垎鏀能需要侊級
         leftmost_x = min(n['x'] for n in nodes_info)
         rightmost_x = max(n['x'] for n in nodes_info)
         topmost_y = min(n['y'] for n in nodes_info)
         bottommost_y = max(n['y'] for n in nodes_info)
         
-        # 鑾峰彇鍊欓€変綅缃?
+        # 获取值欓変綅网?
         candidates = self._find_expansion_candidates_with_zones(
             nodes_info, grid_size, preferred_direction
         )
@@ -806,10 +1012,10 @@ class PopulationCityPlanner(BaseAgent):
             )
         )
         
-        # 杩囨护鎺夊凡缁忓瓨鍦ㄧ殑鑺傜偣浣嶇疆
+        # 过滤鎺夊否络工瓨鍦ㄧ的节点优嶇疆
         existing_positions = {(n['x'], n['y']) for n in nodes_info}
         candidates = [c for c in candidates if (c['x'], c['y']) not in existing_positions]
-        # 去重（同坐标只保留更高优先级）
+        # 去重（却坐标只保留更高优先级）
         unique_candidates: dict[tuple[float, float], dict[str, Any]] = {}
         for c in candidates:
             key = (round(c["x"], 1), round(c["y"], 1))
@@ -818,11 +1024,11 @@ class PopulationCityPlanner(BaseAgent):
                 unique_candidates[key] = c
         candidates = list(unique_candidates.values())
         
-        # 鑾峰彇鍖哄煙鍒楄〃鐢ㄤ簬璺緞瑙勫垝
+        # 获取区域列表用ㄤ于路緞规划
         zones = self._get_zones_for_expansion_planning()
         
         if not candidates:
-            # 濡傛灉娌℃湁鍊欓€夛紝鍚戝榛樿鎵╁睍
+            # 濡傛灉娌℃有值欓夛）否戝榛樿扩展展
             if preferred_direction == 'horizontal':
                 target_x = rightmost_x + grid_size
                 target_y = existing_y[len(existing_y)//2] if existing_y else center_y
@@ -834,8 +1040,7 @@ class PopulationCityPlanner(BaseAgent):
             anchor_node = nodes_info[0]
             candidate_type = 'grid'
         else:
-            # 浼樺厛閫夋嫨浼樺厛绾ч珮鐨勫€欓€?
-            # ????????????????????
+            # 优先选择优先级高的候选
             direction_counts = {}
             for d in self.recent_expansion_directions:
                 direction_counts[d] = direction_counts.get(d, 0) + 1
@@ -856,11 +1061,11 @@ class PopulationCityPlanner(BaseAgent):
             candidate_type = best_candidate.get('type', 'grid')
         allow_non_orthogonal = candidate_type in {'procedural_organic', 'procedural_radial'}
         
-        # 閫夋嫨杩炴帴鑺傜偣 - 杩炴帴鍒版墍鏈夊悎閫傜殑澶栧洿閭诲眳锛堝舰鎴愮綉鏍肩粨鏋勶級
+        # 选择连接节点 - 连接划版墍最夊悎通傜的最栧洿閭诲眳：堝心我愮网标肩粨分勶級
         connect_to = []
-        path_waypoints = {}  # 瀛樺偍姣忎釜杩炴帴鐨勮矾寰勭偣
+        path_waypoints = {}  # 却储姣忎釜连接鐨勮矾寰勭偣
         
-        # 鎵惧埌鎵€鏈夊鍥磋妭鐐?
+        # 扩惧埌扩最夊鍥磋妭点?
         outer_nodes = [
             n for n in nodes_info
             if abs(n['x'] - leftmost_x) < 10 or
@@ -870,36 +1075,36 @@ class PopulationCityPlanner(BaseAgent):
         ]
         
         if not outer_nodes:
-            # 濡傛灉娌℃湁澶栧洿鑺傜偣锛屼娇鐢ㄦ渶杩戠殑鑺傜偣
+            # 濡傛灉娌℃有最栧洿节点：优使用ㄦ要过戠的节点
             nearest = min(nodes_info, key=lambda n: (n['x'] - target_x)**2 + (n['y'] - target_y)**2)
             connect_to.append(nearest['id'])
         else:
-            # 鎵惧埌鎵€鏈夊湪鍚堥€傝窛绂诲唴鐨勫鍥撮偦灞?
-            # 瀵逛簬缃戞牸甯冨眬锛屾柊鑺傜偣搴旇杩炴帴鍒扮浉閭荤殑澶栧洿鑺傜偣
+            # 扩惧埌扩最夊在否优傝窛绂诲唴鐨划鍥撮偦灞?
+            # 密逛于网格布局：屾柊节点密旇连接划扮浉閭荤的最栧洿节点
             
             for outer_node in outer_nodes:
-                # 璁＄畻璺濈
+                # 计算距离
                 dist = ((outer_node['x'] - target_x)**2 + (outer_node['y'] - target_y)**2) ** 0.5
                 
-                # 鍙€冭檻璺濈鍦ㄥ悎鐞嗚寖鍥村唴鐨勮妭鐐癸紙缃戞牸闂磋窛鐨?.5鍊嶄互鍐咃級
+                # 口冭檻距离鍦ㄥ悎鐞嗚寖鍥村唴鐨勮妭点癸紙网戞牸间磋窛鐨?.5值尖互决咃級
                 if dist > grid_size * 1.5:
                     continue
                 
-                # 妫€鏌ユ槸鍚︽槸姝ｄ氦鏂瑰悜鐨勯偦灞咃紙X鎴朰鍧愭爣鐩稿悓鎴栨帴杩戯級
+                # 检查否是否扩是姝ｄ氦方向鐨勯偦灞咃紙X我朰坐标鐩稿悓我栨帴过戯級
                 dx = abs(outer_node['x'] - target_x)
                 dy = abs(outer_node['y'] - target_y)
                 
-                # 姝ｄ氦閭诲眳锛氫富瑕佹槸姘村钩鎴栧瀭鐩存柟鍚?
+                # 姝ｄ氦閭诲眳：氫仅要扩是姘村钩我栧瀭鐩却式否?
                 is_orthogonal = min(dx, dy) < 50
                 is_near_diagonal = abs(dx - dy) < 80 and max(dx, dy) <= grid_size * 1.35
 
                 if not allow_non_orthogonal and not is_orthogonal and not is_near_diagonal:
                     continue
                 
-                # 娣诲姞鍒拌繛鎺ュ垪琛?
+                # 添诲姞划拌繛鎺冷垪琛?
                 connect_to.append(outer_node['id'])
                 
-                # 璁＄畻鍒拌繖涓妭鐐圭殑璺緞锛堣€冭檻鍖哄煙缁曡锛?
+                # 计算划拌繖涓妭点界的路緞：进冭檻区域络曡：?
                 if self.environment:
                     from_node_obj = None
                     for node in self.environment.road_network.nodes.values():
@@ -915,7 +1120,7 @@ class PopulationCityPlanner(BaseAgent):
                         if path:
                             path_waypoints[outer_node['id']] = path
             
-            # 濡傛灉杩樻槸娌℃湁鎵惧埌鍚堥€傜殑杩炴帴锛屼娇鐢ㄦ渶杩戠殑閿氱偣
+            # 濡傛灉过樻是娌℃有扩惧埌否优傜的连接：优使用ㄦ要过戠的閿氱偣
             if len(connect_to) < 2 and outer_nodes:
                 nearest_outer = sorted(
                     outer_nodes,
@@ -937,17 +1142,17 @@ class PopulationCityPlanner(BaseAgent):
             'action': 'expand_city',
             'new_node_position': {'x': target_x, 'y': target_y},
             'connect_to': connect_to,
-            'path_waypoints': path_waypoints,  # 瀛樺偍璺緞鐐逛俊鎭?
+            'path_waypoints': path_waypoints,  # 却储路緞点逛息?
             'expansion_direction': expansion_direction,
             'connect_reason': f'融合 procedural growth: 向{expansion_direction}扩展, 候选类型: {candidate_type}',
-            'shape_consideration': f'融合 grid/organic/radial 规则，优先外圈增长并保持道路连通，道路间距约 {grid_size:.0f}m',
-            'reason': f'规则规划(融合 procedural): 人口密度达到{self.get_population_density()*100:.0f}%',
+            'shape_consideration': f'融合 grid/organic/radial 方则，优先外圈增长并保持道路连通，道路间距约 {grid_size:.0f}m',
+            'reason': f'方则规划(融合 procedural): 人口密度达到{self.get_population_density()*100:.0f}%',
             'is_llm': False,
             'candidate_type': candidate_type
         }
     
     def _get_llm_manager(self):
-        """鑾峰彇LLM绠＄悊鍣ㄣ€"""
+        """获取LLM管理鍣ㄣ"""
         try:
             from city.llm.llm_manager import get_llm_manager
             return get_llm_manager()
@@ -1324,7 +1529,7 @@ class PopulationCityPlanner(BaseAgent):
         5. KDTree 空间查询加速
         
         Args:
-            expansion_size: 扩展规模 (small/medium/large)
+            expansion_size: 扩展方模 (small/medium/large)
             
         Returns:
             是否成功扩展
@@ -1340,10 +1545,10 @@ class PopulationCityPlanner(BaseAgent):
             )
             
             print(f"\n{'='*60}")
-            print(f"[城市扩张] 启动真正 Procedural 扩展 (规模: {expansion_size})")
+            print(f"[城市扩张] 启动真正 Procedural 扩展 (方模: {expansion_size})")
             print(f"{'='*60}")
             
-            # 根据规模选择配置
+            # 根据方模选择配置
             configs = {
                 "small": {"iterations": 2, "description": "小幅扩展"},
                 "medium": {"iterations": 3, "description": "中等扩展"},
@@ -1458,7 +1663,7 @@ class PopulationCityPlanner(BaseAgent):
         
         # 优先使用生长式扩展
         try:
-            # 根据城市规模选择扩展大小
+            # 根据城市方模选择扩展大小
             current_nodes = len(self.environment.road_network.nodes)
             if current_nodes < 8:
                 expansion_size = "small"
@@ -1508,7 +1713,7 @@ class PopulationCityPlanner(BaseAgent):
             return False
         
         try:
-            # 鍒涘缓鏂拌妭鐐?
+            # 创建新拌妭点?
             pos_data = decision['new_node_position']
             planned_pos = Vector2D(pos_data['x'], pos_data['y'])
             new_pos = self._adjust_position_if_near_road(planned_pos)
@@ -1518,7 +1723,7 @@ class PopulationCityPlanner(BaseAgent):
                 name=f"district_{len(self.expansion_history)+1}"
             )
             
-            # 杩炴帴鍒板喅绛栨寚瀹氱殑鑺傜偣
+            # 连接划板决绛栨寚定氱的节点
             network = self.environment.road_network
             connect_to = decision.get('connect_to', [])
             path_waypoints = decision.get('path_waypoints', {})
@@ -1530,7 +1735,7 @@ class PopulationCityPlanner(BaseAgent):
             connections = 0
             connected_nodes = []
             
-            # 鑾峰彇鎵€鏈夊姛鑳藉尯鍩熺敤浜庤矾寰勮鍒?
+            # 获取扩最夊姛能藉尯城知敤人庤矾寰勮划?
             zones = self._get_zones_for_expansion_planning()
             
             for nid in connect_to:
@@ -1543,7 +1748,7 @@ class PopulationCityPlanner(BaseAgent):
                 dist = new_node.position.distance_to(target_node.position)
                 print(f"[城市扩张] 尝试连接 {nid}, 距离 {dist:.1f}m")
                 
-                # 妫€鏌ョ洿鎺ヨ繛鎺ユ槸鍚︿細绌胯繃鍔熻兘鍖哄煙
+                # 检查ョ洿鎺ヨ繛鎺否是否︿细绌胯繃功能区域
                 needs_waypoints = False
                 waypoints = []
                 
@@ -1555,28 +1760,28 @@ class PopulationCityPlanner(BaseAgent):
                     ):
                         print(f"[城市扩张] 直接连接会穿过区域 {zone.name}，需要绕行")
                         needs_waypoints = True
-                        # 璁＄畻缁曡璺緞
+                        # 计算络曡路緞
                         path = self._find_path_around_zones(new_node, target_node, [zone])
                         if path:
                             waypoints.extend(path)
                         break
                 
-                # 濡傛灉鏈夐璁＄畻鐨勮矾寰勭偣鎴栬€呭垰璁＄畻鐨勭粫琛岃矾寰勶紝浣跨敤鎶樼嚎
+                # 濡傛灉最夐计算鐨勮矾寰勭偣我栬呭垰计算鐨勭粫琛岃矾寰勶）优跨敤鎶樼嚎
                 if (nid in path_waypoints and path_waypoints[nid]) or waypoints:
                     if not waypoints and nid in path_waypoints:
                         waypoints = path_waypoints[nid]
                     
                     print(f"[城市扩张] 使用折线路径连接 {nid}，经过 {len(waypoints)} 个中间点")
                     
-                    # 鍒涘缓鎶樼嚎璺緞锛氭柊鑺傜偣 -> 涓棿鐐?-> 鐩爣鑺傜偣
+                    # 创建鎶樼嚎路緞：避柊节点 -> 涓棿点?-> 鐩标节点
                     current_node = new_node
                     path_success = True
                     
                     for i, wp in enumerate(waypoints):
-                        # 鍒涘缓涓棿鑺傜偣锛堝鏋滄槸鎶樼嚎璺緞锛?
+                        # 创建涓棿节点：堝分扩是鎶樼嚎路緞：?
                         wp_pos = Vector2D(wp['x'], wp['y'])
                         
-                        # 妫€鏌ユ槸鍚﹀凡鏈夎妭鐐瑰湪杩欎釜浣嶇疆
+                        # 检查否是否度否最夎妭点方在过欎釜优嶇疆
                         existing = None
                         for node in network.nodes.values():
                             if node.position.distance_to(wp_pos) < 30:
@@ -1584,18 +1789,18 @@ class PopulationCityPlanner(BaseAgent):
                                 break
                         
                         if existing:
-                            # 浣跨敤鐜版湁鑺傜偣
+                            # 优跨敤环版有节点
                             intermediate_node = existing
                             print(f"[城市扩张] 使用现有节点作为中间点: {intermediate_node.node_id}")
                         else:
-                            # 鍒涘缓鏂扮殑涓棿鑺傜偣锛堢敤浜庢姌绾胯浆寮級
+                            # 创建新扮的涓棿节点：堢敤人庢姌绾胯浆开級
                             intermediate_node = self.environment.add_node_dynamically(
                                 position=wp_pos,
                                 name=f"corner_{new_node.node_id}_{i}"
                             )
                             print(f"[城市扩张] 创建中间节点: {intermediate_node.node_id}")
                         
-                        # 杩炴帴褰撳墠鑺傜偣鍒颁腑闂磋妭鐐?
+                        # 连接当前节点划颁中间磋妭点?
                         edge1 = self._safe_add_edge(
                             from_node=current_node,
                             to_node=intermediate_node,
@@ -1611,7 +1816,7 @@ class PopulationCityPlanner(BaseAgent):
                         
                         current_node = intermediate_node
                     
-                    # 鏈€鍚庤繛鎺ュ埌鐩爣鑺傜偣
+                    # 最否庤繛鎺冷埌鐩标节点
                     if path_success:
                         final_edge = self._safe_add_edge(
                             from_node=current_node,
@@ -1624,7 +1829,7 @@ class PopulationCityPlanner(BaseAgent):
                             connected_nodes.append(nid)
                             print(f"[城市扩张] 折线连接成功: {new_node.node_id} ... -> {nid}")
                 else:
-                    # 鐩存帴杩炴帴锛堜笉浼氱┛杩囧尯鍩燂級
+                    # 鐩却帴连接：堜不浼氱┛过准尯城燂級
                     edge = self._safe_add_edge(
                         from_node=new_node,
                         to_node=target_node,
@@ -1636,14 +1841,14 @@ class PopulationCityPlanner(BaseAgent):
                         connected_nodes.append(nid)
                         print(f"[城市扩张] 成功连接 {nid}")
             
-            # 纭繚鑷冲皯2涓繛鎺ワ紙濡傛灉娌℃湁瓒冲杩炴帴锛屽皾璇曠洿鎺ヨ繛鎺ユ渶杩戠殑鑺傜偣锛?
-            # 闄愬埗锛氬彧杩炴帴鍒扮洿鎺ョ浉閭荤殑鑺傜偣锛堢綉鏍奸棿璺濊寖鍥村唴锛夛紝閬垮厤闀胯窛绂诲瑙掕繛鎺?
+            # 确繚自冲皯2涓繛鎺ワ紙濡傛灉娌℃有超冲连接：中皾误曠洿鎺ヨ繛鎺否要过戠的节点：?
+            # 闄愬埗：勤彧连接划扮洿鎺ョ浉閭荤的节点：堢网标奸棿路濊寖鍥村唴：夛）避垮免长胯窛绂诲方掕繛鎺?
             has_detour_path = any(
                 nid in path_waypoints and path_waypoints[nid] 
                 for nid in connected_nodes
             )
             
-            # 璁＄畻鍚堢悊鐨勬渶澶ц繛鎺ヨ窛绂伙紙鍩轰簬缃戞牸闂磋窛锛屽厑璁稿皯閲忎綑閲忥級
+            # 计算否堢理鐨勬要最方繛鎺ヨ窛绂伙紙城轰于网戞牸间磋窛：中厑璁稿皯采忎綑采忥級
             max_connection_dist = max(self.max_edge_length * 0.95, 360.0)
             
             if connections < 2 and not has_detour_path:
@@ -1652,7 +1857,7 @@ class PopulationCityPlanner(BaseAgent):
                     for nid, n in network.nodes.items()
                     if nid != new_node.node_id 
                     and nid not in connected_nodes
-                    and new_node.position.distance_to(n.position) <= max_connection_dist  # 鍙€冭檻杩戣窛绂昏妭鐐?
+                    and new_node.position.distance_to(n.position) <= max_connection_dist  # 口冭檻过戣窛绂昏妭点?
                 ]
                 distances.sort(key=lambda x: x[1])
                 
@@ -1661,18 +1866,18 @@ class PopulationCityPlanner(BaseAgent):
                         break
                     target_node = network.nodes.get(nid)
                     if target_node:
-                        # 鍙€冭檻姝ｄ氦鏂瑰悜鐨勮妭鐐癸紙X鎴朰鍧愭爣鐩稿悓鎴栨帴杩戯級
+                        # 口冭檻姝ｄ氦方向鐨勮妭点癸紙X我朰坐标鐩稿悓我栨帴过戯級
                         dx = abs(new_node.position.x - target_node.position.x)
                         dy = abs(new_node.position.y - target_node.position.y)
                         
-                        # 蹇呴』鏄浜ら偦灞咃紙涓昏鏄按骞虫垨鍨傜洿鏂瑰悜锛?
+                        # 蹇部』显人ら偦灞咃紙涓昏显按骞决垨鍨傜洿方向：?
                         is_orthogonal = min(dx, dy) < 50
                         is_near_diagonal = abs(dx - dy) < 80 and max(dx, dy) <= self.max_edge_length
                         
                         if not allow_non_orthogonal and not is_orthogonal and not is_near_diagonal:
-                            continue  # 璺宠繃瀵硅绾胯妭鐐?
+                            continue  # 路宠繃密硅绾胯妭点?
                         
-                        # 妫€鏌ョ洿鎺ヨ繛鎺ユ槸鍚︿細绌胯繃鍖哄煙
+                        # 检查ョ洿鎺ヨ繛鎺否是否︿细绌胯繃区域
                         would_intersect = False
                         for zone in zones:
                             if self._line_intersects_zone(
@@ -1684,7 +1889,7 @@ class PopulationCityPlanner(BaseAgent):
                                 break
                         
                         if would_intersect:
-                            continue  # 璺宠繃浼氱┛杩囧尯鍩熺殑杩炴帴
+                            continue  # 路宠繃浼氱┛过准尯城知的连接
                         
                         edge = self._safe_add_edge(
                             from_node=new_node,
@@ -1695,12 +1900,12 @@ class PopulationCityPlanner(BaseAgent):
                         if edge:
                             connections += 1
                             connected_nodes.append(nid)
-                            print(f"[城市扩张] 补充连接 {nid} (距离 {dist:.0f}m)")
+                            print(f"[城市扩张] 补位连接 {nid} (距离 {dist:.0f}m)")
             
             if connections > 0:
                 self.last_expansion_time = self.environment.current_time
                 
-                # 璁板綍鎵╁睍鍘嗗彶
+                # 记录扩展展鍘嗗彶
                 expansion_record = {
                     'time': self.environment.current_time,
                     'new_node': new_node.node_id,
@@ -1712,7 +1917,7 @@ class PopulationCityPlanner(BaseAgent):
                 }
                 self.expansion_history.append(expansion_record)
                 
-                # ????????????????
+                # 记录扩展方向历史
                 direction = decision.get('expansion_direction')
                 if direction:
                     self.recent_expansion_directions.append(direction)
@@ -1732,18 +1937,18 @@ class PopulationCityPlanner(BaseAgent):
     
     def _get_time_of_day(self) -> str:
         """
-        鑾峰彇褰撳墠鏃舵銆?
+        获取当前鏃态。?
         
-        妯℃嫙涓€澶?4灏忔椂鐨勬椂娈碉細
-        - morning_rush: 鏃╅珮宄?(7-9鐐?
-        - daytime: 鐧藉ぉ (9-17鐐?
-        - evening_rush: 鏅氶珮宄?(17-19鐐?
-        - night: 澶滈棿 (19-7鐐?
+        模℃嫙涓最?4灏子时鐨勬时娈碉细
+        - morning_rush: 鏃╅珮宄?(7-9点?
+        - daytime: 鐧藉ぉ (9-17点?
+        - evening_rush: 能氶珮宄?(17-19点?
+        - night: 最滈棿 (19-7点?
         """
         if not self.environment:
             return 'daytime'
         
-        # 灏嗕豢鐪熸椂闂存槧灏勫埌24灏忔椂鍒?(姣忎釜浠跨湡鏃ュ亣璁句负360绉掞紝鍗?鍒嗛挓)
+        # 灏嗕豢鐪拟时间却槧灏划埌24灏子时划?(姣忎釜浠跨湡鏃冷亣璁句为360绉掞）却?划嗛挓)
         day_seconds = 360
         time_of_day = self.environment.current_time % day_seconds
         hour = (time_of_day / day_seconds) * 24
@@ -1759,33 +1964,33 @@ class PopulationCityPlanner(BaseAgent):
     
     def _get_zone_travel_multiplier(self, zone_type_name: str, time_period: str, is_origin: bool) -> float:
         """
-        鑾峰彇鍖哄煙鍦ㄧ壒瀹氭椂娈电殑鍑鸿鍊嶆暟銆?
+        获取区域鍦ㄧ壒定避时娈用的鍑体值嶆暟。?
         
         Args:
-            zone_type_name: 鍖哄煙绫诲瀷鍚嶇О
-            time_period: 鏃舵
-            is_origin: 鏄惁鏄捣鐐癸紙True=鍑哄彂锛孎alse=鍒拌揪锛?
+            zone_type_name: 区域类型名称
+            time_period: 鏃态
+            is_origin: 显惁显捣点癸紙True=鍑哄彂：孎alse=划拌揪：?
         
         Returns:
-            鍑鸿鍊嶆暟锛?.0涓哄熀鍑嗭級
+            鍑体值嶆暟：?.0涓哄熀鍑嗭級
         """
         multipliers = {
             'RESIDENTIAL': {
-                'morning_rush': {'origin': 2.5, 'destination': 0.3},  # 鏃╅珮宄板ぇ閲忓嚭闂?
+                'morning_rush': {'origin': 2.5, 'destination': 0.3},  # 鏃╅珮宄板ぇ采工出间?
                 'daytime': {'origin': 0.8, 'destination': 0.6},
-                'evening_rush': {'origin': 0.3, 'destination': 2.5},  # 鏅氶珮宄板ぇ閲忓洖瀹?
+                'evening_rush': {'origin': 0.3, 'destination': 2.5},  # 能氶珮宄板ぇ采工洖定?
                 'night': {'origin': 0.2, 'destination': 1.0}
             },
             'COMMERCIAL': {
-                'morning_rush': {'origin': 0.3, 'destination': 2.0},  # 鏃╅珮宄板幓鍟嗕笟鍖?
-                'daytime': {'origin': 1.0, 'destination': 1.5},       # 鐧藉ぉ鍟嗕笟鍖烘椿璺?
+                'morning_rush': {'origin': 0.3, 'destination': 2.0},  # 鏃╅珮宄板幓商嗕笟鍖?
+                'daytime': {'origin': 1.0, 'destination': 1.5},       # 鐧藉ぉ商嗕笟鍖烘椿路?
                 'evening_rush': {'origin': 1.5, 'destination': 0.5},
                 'night': {'origin': 0.5, 'destination': 0.3}
             },
             'OFFICE': {
                 'morning_rush': {'origin': 0.2, 'destination': 2.5},  # 鏃╅珮宄板幓鍔炲叕鍖?
                 'daytime': {'origin': 0.8, 'destination': 0.8},
-                'evening_rush': {'origin': 2.5, 'destination': 0.2},  # 鏅氶珮宄扮寮€鍔炲叕鍖?
+                'evening_rush': {'origin': 2.5, 'destination': 0.2},  # 能氶珮宄扮开鍔炲叕鍖?
                 'night': {'origin': 0.1, 'destination': 0.1}
             },
             'INDUSTRIAL': {
@@ -1819,12 +2024,12 @@ class PopulationCityPlanner(BaseAgent):
         return period_multipliers['origin'] if is_origin else period_multipliers['destination']
     
     def _get_node_zones_info(self, node) -> list[dict]:
-        """鑾峰彇鑺傜偣闄勮繎鐨勫尯鍩熶俊鎭€"""
+        """获取节点闄勮繎鐨划尯城熶息"""
         nearby_zones = []
         if not self.environment:
             return nearby_zones
         
-        # 鑾峰彇鍩庡競瑙勫垝鏅鸿兘浣撶殑鍖哄煙绠＄悊鍣?
+        # 获取城市规划能体能优撶的区域管理鍣?
         zoning_agent = None
         for agent in self.environment.agents:
             if hasattr(agent, 'zone_manager') and agent.agent_type == AgentType.TRAFFIC_PLANNER:
@@ -1832,14 +2037,14 @@ class PopulationCityPlanner(BaseAgent):
                 break
         
         if not zoning_agent:
-            # 濡傛灉娌℃湁鎵惧埌鍩庡競瑙勫垝鏅鸿兘浣擄紝杩斿洖绌哄垪琛?
+            # 濡傛灉娌℃有扩惧埌城市规划能体能优擄）返回绌哄垪琛?
             return nearby_zones
         
         zone_manager = zoning_agent.zone_manager
         for zone in zone_manager.zones.values():
-            # 璁＄畻鑺傜偣鍒板尯鍩熺殑璺濈
+            # 计算节点划板尯城知的距离
             dist = node.position.distance_to(zone.center)
-            if dist < 250:  # 250绫冲唴璁や负鏄檮杩?
+            if dist < 250:  # 250类冲唴璁や为显檮过?
                 nearby_zones.append({
                     'type': zone.zone_type.name,
                     'population': zone.population,
@@ -1849,7 +2054,7 @@ class PopulationCityPlanner(BaseAgent):
         return nearby_zones
     
     def _get_zoning_agent(self):
-        """鑾峰彇鍩庡競瑙勫垝鏅鸿兘浣撱€"""
+        """获取城市规划能体能优撱"""
         if not self.environment:
             return None
         for agent in self.environment.agents.values():
@@ -1859,13 +2064,13 @@ class PopulationCityPlanner(BaseAgent):
     
     def _auto_spawn_vehicles(self) -> int:
         """
-        鍩轰簬鍖哄煙浜哄彛鍜屾椂娈电壒寰佺敓鎴愯溅杈嗭紙OD瀵癸級銆?
+        城轰于区域人哄口和屾时娈用壒寰佺敓我愯溅边嗭紙OD密癸級。?
         
-        杞﹁締鐢熸垚閫昏緫锛?
-        1. 鑰冭檻鏃舵鐗瑰緛锛堟棭楂樺嘲銆佹櫄楂樺嘲绛夛級
-        2. 鍩轰簬鍖哄煙浜哄彛鍜岀被鍨嬭绠楃敓鎴愭鐜?
-        3. 浣忓畢鍖烘棭涓婄敓鎴愬嚭闂ㄨ溅杈嗭紝鏅氫笂鐢熸垚鍥炲杞﹁締
-        4. 鍟嗕笟鍖?鍔炲叕鍖烘湁瀵瑰簲鐨勫嚭琛屾ā寮?
+        杞﹁辆用拟垚通昏緫：?
+        1. 鑰冭檻鏃态鐗方緛：堟棭楂樺嘲。扩櫄楂樺嘲绛夛級
+        2. 城轰于区域人哄口和岀被鍨嬭管楃敓我愭环?
+        3. 优工畢鍖烘棭涓婄敓我愬出间ㄨ溅边嗭）能氫笂用拟垚鍥炲杞﹁辆
+        4. 商嗕笟鍖?鍔炲叕鍖烘有密方应鐨划出琛屾ā开?
         """
         if not self.environment:
             return 0
@@ -1880,61 +2085,61 @@ class PopulationCityPlanner(BaseAgent):
         stats = self.get_city_stats()
         time_period = self._get_time_of_day()
         
-        # 璁＄畻鍩轰簬鏃舵鐨勫熀纭€鐢熸垚鐜?
+        # 计算城轰于鏃态鐨划熀确用拟垚环?
         base_spawn_rate = {
-            'morning_rush': 0.8,    # 鏃╅珮宄扮敓鎴愮巼楂?
+            'morning_rush': 0.8,    # 鏃╅珮宄扮敓我愮巼楂?
             'daytime': 0.4,
-            'evening_rush': 0.8,    # 鏅氶珮宄扮敓鎴愮巼楂?
+            'evening_rush': 0.8,    # 能氶珮宄扮敓我愮巼楂?
             'night': 0.15
         }.get(time_period, 0.4)
         
-        # 鏍规嵁褰撳墠浜哄彛鍜屽閲忓喅瀹氱敓鎴愭暟閲?
+        # 标方嵁当前人哄口和中采工决定氱敓我愭暟采?
         if stats['current_population'] < stats['max_capacity']:
-            # 璁＄畻鍙敓鎴愮殑杞﹁締鏁?
+            # 计算口敓我愮的杞﹁辆鏁?
             available_slots = stats['max_capacity'] - stats['current_population']
             
-            # 鍩轰簬鍖哄煙璁＄畻姣忎釜鑺傜偣鐨勭敓鎴愭潈閲?
+            # 城轰于区域计算姣忎釜节点鐨勭敓我愭潈采?
             node_weights = []
             for node in nodes:
                 weight = 0
                 nearby_zones = self._get_node_zones_info(node)
                 
                 for zone_info in nearby_zones:
-                    # 鏉冮噸 = 浜哄彛 * 鏃舵鍊嶆暟 * 璺濈琛板噺
+                    # 条冮噸 = 人哄口 * 鏃态值嶆暟 * 距离琛板噺
                     zone_type = zone_info['type']
                     population = zone_info['population']
                     distance = zone_info['distance']
                     
-                    # 鏃舵鍊嶆暟锛堜綔涓鸿捣鐐癸級
+                    # 鏃态值嶆暟：堜。涓体捣点癸級
                     time_multiplier = self._get_zone_travel_multiplier(
                         zone_type, time_period, is_origin=True
                     )
                     
-                    # 璺濈琛板噺锛堣秺杩戝奖鍝嶈秺澶э級
+                    # 距离琛板噺：进秺过戝奖鍝嶈秺最э級
                     distance_decay = max(0, 1 - distance / 200)
                     
                     weight += population * time_multiplier * distance_decay
                 
-                # 濡傛灉娌℃湁闄勮繎鍖哄煙锛岀粰浜堝熀纭€鏉冮噸
+                # 濡傛灉娌℃有闄勮繎区域：岀粰人堝熀确条冮噸
                 if weight == 0:
                     weight = 10
                 
                 node_weights.append((node, weight))
             
-            # 鎸夋潈閲嶉€夋嫨璧风偣
+            # 鎸夋潈采嶉夋嫨璧风偣
             total_weight = sum(w for _, w in node_weights)
             if total_weight == 0:
                 return spawned
             
-            # 鐢熸垚杞﹁締鏁板熀浜庢椂娈靛拰鍙敤瀹归噺
+            # 用拟垚杞﹁辆鏁板熀人庢时娈靛和口敤容量
             num_to_spawn = min(
                 int(available_slots * base_spawn_rate) + 1,
                 available_slots,
-                5  # 姣忔鏈€澶氱敓鎴?杈?
+                5  # 姣子最大氱敓我?边?
             )
             
             for _ in range(num_to_spawn):
-                # 鎸夋潈閲嶉€夋嫨璧风偣
+                # 鎸夋潈采嶉夋嫨璧风偣
                 r = random.uniform(0, total_weight)
                 cumsum = 0
                 origin = nodes[0]
@@ -1944,13 +2149,13 @@ class PopulationCityPlanner(BaseAgent):
                         origin = node
                         break
                 
-                # 閫夋嫨缁堢偣 - 鍩轰簬缁堢偣鐨勫惛寮曟潈閲?
+                # 选择络堢偣 - 城轰于络堢偣鐨划惛开曟潈采?
                 dest_candidates = []
                 for node in nodes:
                     if node.node_id == origin.node_id:
                         continue
                     
-                    # 璁＄畻缁堢偣鍚稿紩鍔?
+                    # 计算络堢偣否稿紩鍔?
                     attraction = 0
                     nearby_zones = self._get_node_zones_info(node)
                     
@@ -1959,7 +2164,7 @@ class PopulationCityPlanner(BaseAgent):
                         population = zone_info['population']
                         distance = zone_info['distance']
                         
-                        # 鏃舵鍊嶆暟锛堜綔涓虹粓鐐癸級
+                        # 鏃态值嶆暟：堜。涓虹粓点癸級
                         time_multiplier = self._get_zone_travel_multiplier(
                             zone_type, time_period, is_origin=False
                         )
@@ -1971,7 +2176,7 @@ class PopulationCityPlanner(BaseAgent):
                         dest_candidates.append((node, attraction))
                 
                 if dest_candidates:
-                    # 鎸夊惛寮曞姏閫夋嫨缁堢偣
+                    # 鎸夊惛开曞姏选择络堢偣
                     total_attraction = sum(a for _, a in dest_candidates)
                     r = random.uniform(0, total_attraction)
                     cumsum = 0
@@ -1982,10 +2187,10 @@ class PopulationCityPlanner(BaseAgent):
                             destination = node
                             break
                 else:
-                    # 闅忔満閫夋嫨
+                    # 闅子満选择
                     destination = random.choice([n for n in nodes if n.node_id != origin.node_id])
                 
-                # 鐢熸垚杞﹁締
+                # 用拟垚杞﹁辆
                 vehicle = self.environment.spawn_vehicle(
                     start_node=origin,
                     end_node=destination,
@@ -2060,13 +2265,13 @@ class PopulationCityPlanner(BaseAgent):
         return upgraded
     
     def _can_remove_without_disconnecting(self, from_node, to_node, edge_id_to_skip) -> bool:
-        """妫€鏌ュ垹闄よ竟鍚庢槸鍚︿細鏂紑缃戠粶銆"""
+        """检查冷垹闄よ竟否庢是否︿细新紑网络。"""
         if not self.environment:
             return False
         
         network = self.environment.road_network
         
-        # 浣跨敤BFS妫€鏌ヤ粠from_node鏄惁杩樿兘鍒拌揪to_node
+        # 优跨敤BFS检查与粠from_node显惁过樿能划拌揪to_node
         visited = set()
         queue = [from_node.node_id]
         visited.add(from_node.node_id)
@@ -2074,13 +2279,13 @@ class PopulationCityPlanner(BaseAgent):
         while queue:
             current_id = queue.pop(0)
             if current_id == to_node.node_id:
-                return True  # 杩樻湁鍏朵粬璺緞
+                return True  # 过樻有鍏朵粬路緞
             
             current = network.nodes.get(current_id)
             if not current:
                 continue
             
-            # 妫€鏌ユ墍鏈夐偦鎺ヨ竟锛堣烦杩囪鍒犻櫎鐨勮竟锛?
+            # 检查否墍最夐偦鎺ヨ竟：进烦过囪删除鐨勮竟：?
             for edge in list(current.outgoing_edges) + list(current.incoming_edges):
                 if edge.edge_id == edge_id_to_skip:
                     continue
@@ -2089,34 +2294,34 @@ class PopulationCityPlanner(BaseAgent):
                     visited.add(neighbor.node_id)
                     queue.append(neighbor.node_id)
         
-        return False  # 娌℃湁鍏朵粬璺緞锛屼笉鑳藉垹闄?
+        return False  # 娌℃有鍏朵粬路緞：优不能藉垹闄?
     
     def _are_edges_parallel_and_close(self, edge1, edge2, angle_threshold=15, dist_threshold=80) -> bool:
-        """妫€鏌ヤ袱鏉¤竟鏄惁杩戜技骞宠涓旇窛绂诲緢杩戙€"""
-        # 璁＄畻杈?鐨勬柟鍚戝悜閲?
+        """检查与袱条¤竟显惁过们技骞宠涓旇窛绂诲緢过戙"""
+        # 计算边?鐨勬式否戝悜采?
         dx1 = edge1.to_node.position.x - edge1.from_node.position.x
         dy1 = edge1.to_node.position.y - edge1.from_node.position.y
         len1 = math.sqrt(dx1**2 + dy1**2)
         if len1 < 1:
             return False
         
-        # 璁＄畻杈?鐨勬柟鍚戝悜閲?
+        # 计算边?鐨勬式否戝悜采?
         dx2 = edge2.to_node.position.x - edge2.from_node.position.x
         dy2 = edge2.to_node.position.y - edge2.from_node.position.y
         len2 = math.sqrt(dx2**2 + dy2**2)
         if len2 < 1:
             return False
         
-        # 妫€鏌ユ槸鍚﹀钩琛岋紙鐐圭Н鎺ヨ繎1鎴?1锛?
+        # 检查否是否度钩琛岋紙点界Н鎺ヨ繎1我?1：?
         cos_angle = abs((dx1*dx2 + dy1*dy2) / (len1 * len2))
-        if cos_angle < 0.95:  # 瑙掑害澶т簬绾?8搴?
+        if cos_angle < 0.95:  # 方掑害最т于绾?8密?
             return False
         
-        # 妫€鏌ヨ窛绂伙紙鍙栬竟1鐨勪腑鐐瑰埌杈?鐨勮窛绂伙級
+        # 检查ヨ窛绂伙紙口栬竟1鐨勪中点方埌边?鐨勮窛绂伙級
         mid1_x = (edge1.from_node.position.x + edge1.to_node.position.x) / 2
         mid1_y = (edge1.from_node.position.y + edge1.to_node.position.y) / 2
         
-        # 璁＄畻涓偣鍒拌竟2鐨勮窛绂?
+        # 计算涓偣划拌竟2鐨勮窛绂?
         dist = self._point_to_segment_distance(
             mid1_x, mid1_y,
             edge2.from_node.position.x, edge2.from_node.position.y,
@@ -2126,7 +2331,7 @@ class PopulationCityPlanner(BaseAgent):
         return dist < dist_threshold
     
     def _point_to_segment_distance(self, px, py, x1, y1, x2, y2) -> float:
-        """璁＄畻鐐瑰埌绾挎鐨勮窛绂汇€"""
+        """计算点方埌绾条鐨勮窛绂汇"""
         dx = x2 - x1
         dy = y2 - y1
         
@@ -2140,13 +2345,13 @@ class PopulationCityPlanner(BaseAgent):
         return math.sqrt((px - proj_x)**2 + (py - proj_y)**2)
     
     def update(self, dt: float) -> None:
-        """鏇存柊瑙勫垝鏅鸿兘浣撶姸鎬併€"""
+        """更新规划能体能优撶姸性併"""
         if not self.environment:
             return
             
         current_time = self.environment.current_time
         
-        # 瀹氭湡鑷姩鐢熸垚杞﹁締
+        # 定避湡自动用拟垚杞﹁辆
         self.auto_spawn_timer += dt
         if self.auto_spawn_timer >= self.spawn_interval:
             self.auto_spawn_timer = 0.0
@@ -2154,9 +2359,9 @@ class PopulationCityPlanner(BaseAgent):
             if spawned > 0:
                 stats = self.get_city_stats()
                 print(f"[人口增长] 新增 {spawned} 名通勤者，"
-                      f"褰撳墠浜哄彛: {stats['current_population']}/{stats['max_capacity']}")
+                      f"当前人哄口: {stats['current_population']}/{stats['max_capacity']}")
         
-        # 瀹氭湡鍐崇瓥鏄惁闇€瑕佹墿寮?
+        # 定避湡决策略显惁需要扩展开?
         check_interval = 5
         if int(current_time) % check_interval == 0 and int(current_time) > 0:
             if not hasattr(self, '_last_expansion_check') or self._last_expansion_check != int(current_time):
@@ -2171,8 +2376,8 @@ class PopulationCityPlanner(BaseAgent):
                             print(f"[路网规划] 城市路网已扩展，当前节点数: "
                                   f"{len(self.environment.road_network.nodes)}")
         
-        # 瀹氭湡浼樺寲閬撹矾缃戠粶锛堝垹闄や綆鏁堥亾璺級
-        optimize_interval = 15  # 姣?5绉掓鏌ヤ竴娆?
+        # 定避湡优化避撹矾网络：堝垹闄や綆鏁优于路級
+        optimize_interval = 15  # 姣?5绉掓查与一娆?
         if int(current_time) % optimize_interval == 0 and int(current_time) > 5:
             if not hasattr(self, '_last_optimize_check') or self._last_optimize_check != int(current_time):
                 self._last_optimize_check = int(current_time)
@@ -2182,10 +2387,10 @@ class PopulationCityPlanner(BaseAgent):
                           f"{len(self.environment.road_network.edges)}")
     
     def get_status(self) -> dict[str, Any]:
-        """鑾峰彇瑙勫垝鏅鸿兘浣撶姸鎬併€"""
+        """获取规划能体能优撶姸性併"""
         time_period = self._get_time_of_day()
         
-        # 鑾峰彇鍖哄煙缁熻
+        # 获取区域统计
         zone_stats = {}
         zoning_agent = self._get_zoning_agent()
         if zoning_agent:
@@ -2223,7 +2428,7 @@ class PopulationCityPlanner(BaseAgent):
         }
     
     def _get_city_stage(self) -> str:
-        """鏍规嵁鑺傜偣鏁伴噺鍒ゆ柇鍩庡競鍙戝睍闃舵銆"""
+        """标方嵁节点数量判断城市口戝展闃态。"""
         if not self.environment:
             return 'initial'
         node_count = len(self.environment.road_network.nodes)
@@ -2234,7 +2439,7 @@ class PopulationCityPlanner(BaseAgent):
         return 'initial'
 
 
-# 淇濈暀鏃х被鍚嶄互渚垮吋瀹?
+# 淇濈暀鏃х被否尖互渚垮吋定?
 PlanningAgent = PopulationCityPlanner
 
 

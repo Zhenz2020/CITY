@@ -1240,6 +1240,8 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
         planning_interval=15.0,      # 每15秒尝试规划
         max_zones=30
     )
+    zoning_agent.planning_interval = 15.0
+    zoning_agent.max_zones = 40
     env.add_agent(zoning_agent)
     zoning_agent.activate()
     print(f"[城市规划] 添加城市规划智能体 {zoning_agent.agent_id} (LLM={'启用' if zoning_use_llm else '禁用'})")
@@ -1256,17 +1258,37 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
     # 城市诞生融合：按初始路网边界动态放置初始功能区
     initial_zones = _build_initial_zones_for_birth(network)
     for zone_type, center, width, height, name in initial_zones:
-        zone = Zone(
-            zone_type=zone_type,
-            center=center,
-            width=width,
-            height=height,
-            name=name
-        )
-        zone.planning_time = 0.0
-        zone.planning_reason = "初始规划"
-        zone.population = int(zone.max_population * 0.3)  # 初始30%人口
-        zoning_agent.zone_manager.add_zone(zone)
+        placed = False
+        candidate_centers = [
+            center,
+            Vector2D(center.x + 40, center.y),
+            Vector2D(center.x - 40, center.y),
+            Vector2D(center.x, center.y + 40),
+            Vector2D(center.x, center.y - 40),
+            Vector2D(center.x + 60, center.y + 60),
+            Vector2D(center.x - 60, center.y - 60),
+        ]
+
+        for candidate_center in candidate_centers:
+            if not zoning_agent._is_zone_layout_valid(candidate_center, width, height, zone_type, name):
+                continue
+
+            zone = Zone(
+                zone_type=zone_type,
+                center=candidate_center,
+                width=width,
+                height=height,
+                name=name
+            )
+            zone.planning_time = 0.0
+            zone.planning_reason = "初始规划"
+            zone.population = int(zone.max_population * 0.3)  # 初始30%人口
+            zoning_agent.zone_manager.add_zone(zone)
+            placed = True
+            break
+
+        if not placed:
+            print(f"[城市规划] 跳过初始区域 {name}，原因：与道路或既有区域冲突")
     
     print(f"[城市规划] 创建 {len(initial_zones)} 个初始功能区域")
     
@@ -1398,6 +1420,7 @@ def planning_simulation_loop():
                         "zones": zones_data,
                         "planning_agent": planning_agent_status,
                         "zoning_agent": zoning_agent_status,
+                        "llm_decisions": get_planning_llm_decisions(planning_simulation) if planning_simulation else [],
                         "expansion_history": planning_simulation.get_expansion_history() if planning_simulation else [],
                         "statistics": {"active_vehicles": vehicles_count},
                         "agent_memories": agent_memories_data,
@@ -1476,6 +1499,7 @@ def get_planning_state():
             "expansion_history": planning_simulation.get_expansion_history(),
             "planning_agent": planning_agent_status,
             "zoning_agent": zoning_agent_status,
+            "llm_decisions": get_planning_llm_decisions(planning_simulation),
             "zones": zones_data,
             "statistics": {"active_vehicles": len(planning_simulation.vehicles)},
             "agent_memories": agent_memories_data,
@@ -1817,6 +1841,17 @@ def get_zoning_data(env: SimulationEnvironment) -> list:
                 })
             break
     return zones_data
+
+def get_planning_llm_decisions(env: SimulationEnvironment) -> list[dict[str, Any]]:
+    """收集规划模式下各智能体的大模型决策归档。"""
+    records: list[dict[str, Any]] = []
+    for agent in env.agents.values():
+        archive = getattr(agent, "llm_decision_archive", None)
+        if isinstance(archive, list):
+            records.extend(item for item in archive if isinstance(item, dict))
+
+    records.sort(key=lambda item: float(item.get("timestamp", 0.0)), reverse=True)
+    return records[:200]
 
 def get_zoning_agent_status(env: SimulationEnvironment) -> dict | None:
     """获取城市规划智能体状态。"""
