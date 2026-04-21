@@ -47,7 +47,7 @@ class PopulationCityPlanner(BaseAgent):
         environment: SimulationEnvironment | None = None,
         use_llm: bool = True,
         population_per_node: int = 3,
-        expansion_threshold: float = 0.8,
+        expansion_threshold: float = 0.5,
         spawn_interval: float = 3.0,
         max_nodes: int = 25,
         min_edge_length: float = 200.0,
@@ -1707,6 +1707,167 @@ class PopulationCityPlanner(BaseAgent):
             )
         return success
     
+    def _create_orthogonal_path(
+        self, 
+        from_pos: Vector2D, 
+        to_pos: Vector2D,
+        prefer_horizontal_first: bool = True
+    ) -> list[dict[str, float]]:
+        """
+        创建方正的正交路径（水平+垂直的直角转弯）。
+        
+        如果直接连接是斜的，添加中间点使其变成直角转弯。
+        优先沿途经过功能区域。
+        
+        Args:
+            from_pos: 起点位置
+            to_pos: 终点位置
+            prefer_horizontal_first: 优先水平方向先走
+            
+        Returns:
+            中间点列表（不包含起点和终点）
+        """
+        import math
+        
+        dx = to_pos.x - from_pos.x
+        dy = to_pos.y - from_pos.y
+        
+        # 如果已经是水平或垂直，不需要中间点
+        if abs(dx) < 10 or abs(dy) < 10:
+            return []
+        
+        # 计算角度，如果接近45度，需要决定先水平还是先垂直
+        angle = math.degrees(math.atan2(abs(dy), abs(dx)))
+        
+        zones = self._get_zones_for_expansion_planning()
+        
+        # 两种路径方案
+        # 方案1: 先水平后垂直
+        path1_corner = Vector2D(to_pos.x, from_pos.y)
+        path1_score = self._score_path_through_zones(from_pos, path1_corner, to_pos, zones)
+        
+        # 方案2: 先垂直后水平
+        path2_corner = Vector2D(from_pos.x, to_pos.y)
+        path2_score = self._score_path_through_zones(from_pos, path2_corner, to_pos, zones)
+        
+        # 选择经过更多功能区域的路径
+        if path1_score >= path2_score:
+            corner = path1_corner
+        else:
+            corner = path2_corner
+        
+        # 只有当转角点与起点/终点有足够距离时才添加
+        min_leg_length = 30  # 最小路段长度
+        
+        dist_to_corner = from_pos.distance_to(corner)
+        dist_from_corner = corner.distance_to(to_pos)
+        
+        if dist_to_corner < min_leg_length or dist_from_corner < min_leg_length:
+            # 转角太近，使用斜线
+            return []
+        
+        # 将转角点对齐到网格
+        corner = self._align_to_grid(corner, grid_size=50.0)
+        
+        return [{'x': corner.x, 'y': corner.y}]
+    
+    def _score_path_through_zones(
+        self, 
+        start: Vector2D, 
+        corner: Vector2D, 
+        end: Vector2D,
+        zones: list
+    ) -> float:
+        """
+        给路径打分，考虑是否经过功能区域。
+        
+        Returns:
+            分数，越高表示经过的功能区域越多/越好
+        """
+        score = 0.0
+        
+        # 两段路径
+        segments = [
+            (start, corner),
+            (corner, end)
+        ]
+        
+        for seg_start, seg_end in segments:
+            for zone in zones:
+                # 检查线段是否经过区域附近
+                if self._line_near_zone(
+                    seg_start.x, seg_start.y,
+                    seg_end.x, seg_end.y,
+                    zone
+                ):
+                    # 根据区域类型给分
+                    zone_type_scores = {
+                        'RESIDENTIAL': 2.0,
+                        'COMMERCIAL': 3.0,
+                        'OFFICE': 2.5,
+                        'SCHOOL': 1.5,
+                        'HOSPITAL': 1.5,
+                        'PARK': 1.0,
+                        'INDUSTRIAL': 0.5,
+                    }
+                    score += zone_type_scores.get(zone.zone_type.name, 1.0)
+        
+        return score
+    
+    def _line_near_zone(
+        self, 
+        x1: float, y1: float, 
+        x2: float, y2: float,
+        zone,
+        buffer: float = 50.0
+    ) -> bool:
+        """检查线段是否在区域附近（有buffer距离内）。"""
+        min_x, min_y, max_x, max_y = zone.bounds
+        
+        # 扩展边界
+        min_x -= buffer
+        min_y -= buffer
+        max_x += buffer
+        max_y += buffer
+        
+        # 检查线段是否与扩展后的边界相交或接近
+        # 简化的检查：检查线段的中点是否在扩展边界内
+        mid_x = (x1 + x2) / 2
+        mid_y = (y1 + y2) / 2
+        
+        if min_x <= mid_x <= max_x and min_y <= mid_y <= max_y:
+            return True
+        
+        # 检查线段的两个端点
+        points = [(x1, y1), (x2, y2)]
+        for px, py in points:
+            if min_x <= px <= max_x and min_y <= py <= max_y:
+                return True
+        
+        return False
+    
+    def _align_to_grid(self, pos: Vector2D, grid_size: float = 50.0) -> Vector2D:
+        """
+        将位置对齐到网格，使道路更方正。
+        
+        Args:
+            pos: 原始位置
+            grid_size: 网格大小（米）
+            
+        Returns:
+            对齐后的位置
+        """
+        aligned_x = round(pos.x / grid_size) * grid_size
+        aligned_y = round(pos.y / grid_size) * grid_size
+        
+        # 确保对齐后的位置不会与原始位置偏离太远（最大偏离半个网格）
+        if abs(aligned_x - pos.x) > grid_size / 2:
+            aligned_x = pos.x
+        if abs(aligned_y - pos.y) > grid_size / 2:
+            aligned_y = pos.y
+            
+        return Vector2D(aligned_x, aligned_y)
+    
     def _act_traditional(self, decision: dict[str, Any] | None) -> bool:
         """传统的单节点扩展方式（作为回退）。"""
         if not decision or not self.environment:
@@ -1717,6 +1878,10 @@ class PopulationCityPlanner(BaseAgent):
             pos_data = decision['new_node_position']
             planned_pos = Vector2D(pos_data['x'], pos_data['y'])
             new_pos = self._adjust_position_if_near_road(planned_pos)
+            
+            # 将位置对齐到网格，使道路更方正
+            new_pos = self._align_to_grid(new_pos, grid_size=50.0)
+            print(f"[城市扩张] 新节点位置对齐到网格: ({new_pos.x:.0f}, {new_pos.y:.0f})")
             
             new_node = self.environment.add_node_dynamically(
                 position=new_pos,
@@ -1748,23 +1913,36 @@ class PopulationCityPlanner(BaseAgent):
                 dist = new_node.position.distance_to(target_node.position)
                 print(f"[城市扩张] 尝试连接 {nid}, 距离 {dist:.1f}m")
                 
+                # 生成方正的正交路径（优先水平+垂直的直角转弯）
+                orthogonal_waypoints = self._create_orthogonal_path(
+                    new_node.position,
+                    target_node.position,
+                    prefer_horizontal_first=True
+                )
+                
                 # 检查ョ洿鎺ヨ繛鎺否是否︿细绌胯繃功能区域
                 needs_waypoints = False
                 waypoints = []
                 
-                for zone in zones:
-                    if self._line_intersects_zone(
-                        new_node.position.x, new_node.position.y,
-                        target_node.position.x, target_node.position.y,
-                        zone
-                    ):
-                        print(f"[城市扩张] 直接连接会穿过区域 {zone.name}，需要绕行")
-                        needs_waypoints = True
-                        # 计算络曡路緞
-                        path = self._find_path_around_zones(new_node, target_node, [zone])
-                        if path:
-                            waypoints.extend(path)
-                        break
+                # 优先使用方正路径（如果有的话）
+                if orthogonal_waypoints:
+                    waypoints = orthogonal_waypoints
+                    print(f"[城市扩张] 使用方正正交路径，经过 {len(waypoints)} 个转角点")
+                else:
+                    # 检查是否需要绕行功能区域
+                    for zone in zones:
+                        if self._line_intersects_zone(
+                            new_node.position.x, new_node.position.y,
+                            target_node.position.x, target_node.position.y,
+                            zone
+                        ):
+                            print(f"[城市扩张] 直接连接会穿过区域 {zone.name}，需要绕行")
+                            needs_waypoints = True
+                            # 计算络曡路緞
+                            path = self._find_path_around_zones(new_node, target_node, [zone])
+                            if path:
+                                waypoints.extend(path)
+                            break
                 
                 # 濡傛灉最夐计算鐨勮矾寰勭偣我栬呭垰计算鐨勭粫琛岃矾寰勶）优跨敤鎶樼嚎
                 if (nid in path_waypoints and path_waypoints[nid]) or waypoints:
@@ -2368,7 +2546,15 @@ class PopulationCityPlanner(BaseAgent):
                 self._last_expansion_check = int(current_time)
                 stats = self.get_city_stats()
                 
-                if stats['density'] >= self.expansion_threshold:
+                # 检查车辆人口密度
+                vehicle_density_trigger = stats['density'] >= self.expansion_threshold
+                
+                # 检查区域人口压力
+                zone_population_trigger = self._check_zone_population_pressure()
+                
+                if vehicle_density_trigger or zone_population_trigger:
+                    reason = "车辆密度高" if vehicle_density_trigger else "区域人口压力大"
+                    print(f"[路网规划] 触发扩展: {reason}")
                     decision = self.decide()
                     if decision:
                         success = self.act(decision)
@@ -2386,6 +2572,39 @@ class PopulationCityPlanner(BaseAgent):
                     print(f"[路网优化] 已优化道路网络，当前边数: "
                           f"{len(self.environment.road_network.edges)}")
     
+    def _check_zone_population_pressure(self) -> bool:
+        """
+        检查区域人口压力，如果区域人口接近容量上限则触发道路扩展。
+        
+        Returns:
+            如果区域人口压力超过阈值则返回True
+        """
+        zoning_agent = self._get_zoning_agent()
+        if not zoning_agent:
+            return False
+        
+        zm = zoning_agent.zone_manager
+        total_pop = zm.get_total_population()
+        
+        # 计算总容量
+        total_capacity = sum(
+            zone.max_population 
+            for zone in zm.zones.values()
+        )
+        
+        if total_capacity == 0:
+            return False
+        
+        # 人口使用率
+        utilization = total_pop / total_capacity
+        
+        # 如果区域人口使用率超过75%，触发道路扩展
+        if utilization > 0.75:
+            print(f"[路网规划] 区域人口压力高: {utilization*100:.1f}% ({total_pop}/{total_capacity})，需要扩展道路")
+            return True
+        
+        return False
+    
     def get_status(self) -> dict[str, Any]:
         """获取规划能体能优撶姸性併"""
         time_period = self._get_time_of_day()
@@ -2395,9 +2614,15 @@ class PopulationCityPlanner(BaseAgent):
         zoning_agent = self._get_zoning_agent()
         if zoning_agent:
             zm = zoning_agent.zone_manager
+            total_pop = zm.get_total_population()
+            total_capacity = sum(zone.max_population for zone in zm.zones.values())
+            population_pressure = total_pop / total_capacity if total_capacity > 0 else 0
+            
             zone_stats = {
                 'total_zones': len(zm.zones),
-                'total_population': zm.get_total_population(),
+                'total_population': total_pop,
+                'total_capacity': total_capacity,
+                'population_pressure': round(population_pressure, 2),
                 'by_type': {}
             }
             from city.urban_planning.zone import ZoneType

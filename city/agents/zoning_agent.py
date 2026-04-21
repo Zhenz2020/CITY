@@ -1020,13 +1020,22 @@ class ZoningAgent(BaseAgent):
             return
 
         current_time = self.environment.current_time
-
-        # 按规划间隔批量补充区域，数量由人口与路网状态共同决定
-        if (
+        
+        # 人口增长
+        for zone in self.zone_manager.zones.values():
+            if zone.population < zone.target_population:
+                zone.grow_population(0.005)
+        
+        # 检查是否需要基于人口压力触发规划
+        population_pressure = self._check_population_pressure()
+        should_plan = (
             current_time > 0
             and current_time - self.last_planning_time >= self.planning_interval
             and self._road_network_ready_for_zoning()
-        ):
+        ) or population_pressure
+        
+        # 按规划间隔批量补充区域，数量由人口与路网状态共同决定
+        if should_plan:
             # 立即更新时间戳，防止规划失败后立即重试导致频繁请求LLM
             self.last_planning_time = current_time
             
@@ -1045,10 +1054,35 @@ class ZoningAgent(BaseAgent):
                 )
             else:
                 print(f"[ZoningAgent] 本轮规划未产生有效区域，等待下一轮")
-
-        for zone in self.zone_manager.zones.values():
-            if zone.population < zone.target_population:
-                zone.grow_population(0.005)
+    
+    def _check_population_pressure(self) -> bool:
+        """
+        检查人口压力，如果人口接近容量上限则触发规划。
+        
+        Returns:
+            如果人口压力超过阈值则返回True
+        """
+        stats = self.zone_manager.get_statistics()
+        total_pop = stats.get('total_population', 0)
+        
+        # 计算总容量
+        total_capacity = sum(
+            zone.max_population 
+            for zone in self.zone_manager.zones.values()
+        )
+        
+        if total_capacity == 0:
+            return False
+        
+        # 人口使用率
+        utilization = total_pop / total_capacity
+        
+        # 如果人口使用率超过70%，触发规划
+        if utilization > 0.7:
+            print(f"[ZoningAgent] 人口压力高: {utilization*100:.1f}% ({total_pop}/{total_capacity})，触发规划")
+            return True
+        
+        return False
 
     def _llm_determine_zone_batch_count(self) -> int | None:
         """使用大模型根据人口与路网状态决定本轮新增区域数。"""
@@ -1227,11 +1261,21 @@ class ZoningAgent(BaseAgent):
                 center = last_decision['center']
                 last_decision['center'] = {'x': float(center.x), 'y': float(center.y)}
         
+        # 计算人口压力
+        zone_stats = self.zone_manager.get_statistics()
+        total_pop = zone_stats.get('total_population', 0)
+        total_capacity = sum(zone.max_population for zone in self.zone_manager.zones.values())
+        population_pressure = total_pop / total_capacity if total_capacity > 0 else 0
+        
         return {
             'agent_id': self.agent_id,
             'agent_type': 'ZoningAgent',
+            'state': 'planning' if self._check_population_pressure() else 'normal',
             'total_zones': len(self.zone_manager.zones),
-            'zone_stats': self.zone_manager.get_statistics(),
+            'zone_stats': zone_stats,
+            'total_population': total_pop,
+            'total_capacity': total_capacity,
+            'population_pressure': round(population_pressure, 2),
             'planning_history_count': len(self.planning_history),
             'total_zones_planned': self.total_zones_planned,
             'last_planning_time': self.last_planning_time,

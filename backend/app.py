@@ -1411,6 +1411,9 @@ def planning_simulation_loop():
                                 except Exception as e:
                                     print(f"[记忆数据] 获取智能体 {agent.agent_id} 记忆失败: {e}")
                     
+                    # 获取增强的统计数据
+                    stats = get_enhanced_statistics(planning_simulation) if planning_simulation else {"active_vehicles": vehicles_count}
+                    
                     data = {
                         "time": current_time,
                         "is_running": is_planning_running,
@@ -1422,7 +1425,7 @@ def planning_simulation_loop():
                         "zoning_agent": zoning_agent_status,
                         "llm_decisions": get_planning_llm_decisions(planning_simulation) if planning_simulation else [],
                         "expansion_history": planning_simulation.get_expansion_history() if planning_simulation else [],
-                        "statistics": {"active_vehicles": vehicles_count},
+                        "statistics": stats,
                         "agent_memories": agent_memories_data,
                         "agents_with_memory": agents_with_memory_list
                     }
@@ -1501,7 +1504,7 @@ def get_planning_state():
             "zoning_agent": zoning_agent_status,
             "llm_decisions": get_planning_llm_decisions(planning_simulation),
             "zones": zones_data,
-            "statistics": {"active_vehicles": len(planning_simulation.vehicles)},
+            "statistics": get_enhanced_statistics(planning_simulation),
             "agent_memories": agent_memories_data,
             "agents_with_memory": agents_with_memory_list
         })
@@ -1862,6 +1865,36 @@ def get_zoning_agent_status(env: SimulationEnvironment) -> dict | None:
             return agent.get_status()
     return None
 
+def get_enhanced_statistics(env: SimulationEnvironment) -> dict[str, Any]:
+    """获取增强的统计数据，包含人口信息。"""
+    stats = env.get_statistics()
+    
+    # 从ZoningAgent获取人口数据
+    from city.agents.zoning_agent import ZoningAgent
+    for agent in env.agents.values():
+        if isinstance(agent, ZoningAgent):
+            zone_stats = agent.zone_manager.get_statistics()
+            total_pop = zone_stats.get('total_population', 0)
+            total_zones = zone_stats.get('total_zones', 0)
+            
+            # 计算人口容量和压力
+            total_capacity = sum(
+                zone.max_population 
+                for zone in agent.zone_manager.zones.values()
+            )
+            population_pressure = total_pop / total_capacity if total_capacity > 0 else 0
+            
+            stats['total_population'] = total_pop
+            stats['total_zones'] = total_zones
+            stats['total_capacity'] = total_capacity
+            stats['population_pressure'] = round(population_pressure, 2)
+            
+            # 调试输出
+            print(f"[统计] 区域数: {total_zones}, 总人口: {total_pop}/{total_capacity}, 压力: {population_pressure:.1%}")
+            break
+    
+    return stats
+
 def get_zoning_agent_status(env: SimulationEnvironment) -> dict | None:
     """获取城市规划Agent状态。"""
     from city.urban_planning.zoning_agent import ZoningAgent
@@ -1955,7 +1988,7 @@ def get_zoning_state():
             "network": get_network_data(zoning_simulation),
             "zones": get_zoning_data(zoning_simulation),
             "zoning_agent": get_zoning_agent_status(zoning_simulation),
-            "statistics": zoning_simulation.get_statistics()
+            "statistics": get_enhanced_statistics(zoning_simulation)
         })
 
 @app.route("/api/zoning/control", methods=["POST"])
