@@ -201,7 +201,7 @@ def _create_initial_zones(zoning_agent: ZoningAgent, network: RoadNetwork) -> No
             center=Vector2D(x, y),
             width=120,
             height=100,
-            name=f"住宅区_{i+1}"
+            name=f"RESIDENTIAL_{i + 1}"
         )
         zone.target_population = int(zone.max_population * 0.5)
         zone.population = zone.target_population
@@ -219,7 +219,7 @@ def _create_initial_zones(zoning_agent: ZoningAgent, network: RoadNetwork) -> No
         center=Vector2D(center_x + 150, center_y + 150),
         width=100,
         height=80,
-        name="商业区_1"
+        name="COMMERCIAL_1"
     )
     commercial_zone.target_population = int(commercial_zone.max_population * 0.4)
     commercial_zone.population = commercial_zone.target_population

@@ -44,9 +44,10 @@ def create_grid_network(size: int = 3, spacing: float = 200.0):
 
     # 信号灯
     for (i, j), node in nodes.items():
-        if node.is_intersection:
-            node.traffic_light = TrafficLight(
-                node, cycle_time=60, green_duration=25, yellow_duration=5
+        if network.needs_traffic_light(node):
+            network.register_traffic_light(
+                node,
+                TrafficLight(node, cycle_time=60, green_duration=25, yellow_duration=5)
             )
 
     return network, nodes
@@ -73,7 +74,7 @@ def main():
     # 交通管理者
     manager = TrafficManager(environment=env)
     for node in network.nodes.values():
-        if node.is_intersection:
+        if node.traffic_light:
             manager.add_control_node(node)
     env.add_agent(manager)
     print(f"交通管理者控制 {len(manager.control_area)} 个交叉口")

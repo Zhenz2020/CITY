@@ -186,7 +186,7 @@ class Zone:
         self.center = center
         self.width = width
         self.height = height
-        self.name = name or f"{zone_type.display_name}_{Zone._zone_counter}"
+        self.name = name or f"{zone_type.name}_{Zone._zone_counter}"
         
         # 人口管理
         area = width * height
@@ -322,7 +322,7 @@ class Zone:
         return {
             'zone_id': self.zone_id,
             'zone_type': self.zone_type.name,
-            'zone_type_display': self.zone_type.display_name,
+            'zone_type_display': self.zone_type.name,
             'name': self.name,
             'center': {'x': self.center.x, 'y': self.center.y},
             'width': self.width,
@@ -342,7 +342,7 @@ class Zone:
         }
     
     def __repr__(self) -> str:
-        return f"Zone({self.name}, {self.zone_type.display_name}, pop:{self.population}/{self.max_population})"
+        return f"Zone({self.name}, {self.zone_type.name}, pop:{self.population}/{self.max_population})"
 
 
 class ZoneManager:
@@ -355,9 +355,19 @@ class ZoneManager:
     def __init__(self):
         self.zones: dict[str, Zone] = {}
         self._zones_by_type: dict[ZoneType, list[Zone]] = {}
+        self._name_counters: dict[ZoneType, int] = {}
+
+    def format_zone_name(self, zone_type: ZoneType, number: int) -> str:
+        return f"{zone_type.name}_{number}"
+
+    def next_zone_name(self, zone_type: ZoneType) -> str:
+        number = self._name_counters.get(zone_type, 0) + 1
+        return self.format_zone_name(zone_type, number)
         
     def add_zone(self, zone: Zone) -> None:
         """添加区域。"""
+        self._name_counters[zone.zone_type] = self._name_counters.get(zone.zone_type, 0) + 1
+        zone.name = self.format_zone_name(zone.zone_type, self._name_counters[zone.zone_type])
         self.zones[zone.zone_id] = zone
         
         if zone.zone_type not in self._zones_by_type:

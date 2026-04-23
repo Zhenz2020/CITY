@@ -375,7 +375,7 @@ class ZoningAgent(BaseAgent):
                 'center': Vector2D(center_x, center_y),
                 'width': width,
                 'height': height,
-                'name': plan.get('name', f'{default_type.display_name}_新规划'),
+                'name': plan.get('name', f'{default_type.name}_{len(self.zone_manager.zones)+1}'),
                 'reasoning': plan.get('reasoning', 'LLM规划'),
                 'is_llm': True
             }
@@ -452,7 +452,7 @@ class ZoningAgent(BaseAgent):
                     'center': center,
                     'width': width,
                     'height': height,
-                    'name': f'{zone_type.display_name}_{len(self.zone_manager.zones)+1}',
+                    'name': f'{zone_type.name}_{len(self.zone_manager.zones)+1}',
                     'reasoning': f'规则规划: 根据{zone_type.display_name}类型选择合适位置',
                     'is_llm': False
                 }
@@ -470,7 +470,7 @@ class ZoningAgent(BaseAgent):
                     'center': center,
                     'width': width,
                     'height': height,
-                    'name': f'{zone_type.display_name}_{len(self.zone_manager.zones)+1}',
+                    'name': f'{zone_type.name}_{len(self.zone_manager.zones)+1}',
                     'reasoning': f'规则规划: 缩小尺寸后找到合适位置',
                     'is_llm': False
                 }
@@ -621,7 +621,7 @@ class ZoningAgent(BaseAgent):
             center = decision['center']
             width = decision['width']
             height = decision['height']
-            name = decision.get('name', f'{zone_type.display_name}_新规划')
+            name = self.zone_manager.next_zone_name(zone_type)
             
             # 创建区域
             zone = Zone(
@@ -668,6 +668,8 @@ class ZoningAgent(BaseAgent):
             zone.target_population = int(zone.max_population * random.uniform(0.3, 0.7))
             
             self.zone_manager.add_zone(zone)
+            name = zone.name
+            decision['name'] = name
             self.last_planning_time = self.environment.current_time
             
             # 记录历史

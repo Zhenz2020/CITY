@@ -58,17 +58,17 @@ interface RoadPlanningViewProps {
 }
 
 const llmCategoryLabelMap: Record<string, string> = {
-  road_expansion: '道路扩展',
-  zone_batch_count: '区域批次',
-  zone_location_type: '区域位置'
+  road_expansion: 'Road Expansion',
+  zone_batch_count: 'Zone Batch',
+  zone_location_type: 'Zone Location'
 };
 
 const llmStatusLabelMap: Record<string, string> = {
-  success: '成功',
-  fallback: '降级',
-  parse_failed: '解析失败',
-  empty_response: '空响应',
-  error: '错误'
+  success: 'Success',
+  fallback: 'Fallback',
+  parse_failed: 'Parse Failed',
+  empty_response: 'Empty Response',
+  error: 'Error'
 };
 
 const zoneColorMap: Record<string, string> = {
@@ -160,7 +160,7 @@ const PlanningCanvas: React.FC<{
       ctx.fillStyle = '#64748b';
       ctx.font = '16px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('等待路网数据...', width / 2, height / 2);
+      ctx.fillText('Waiting for network data...', width / 2, height / 2);
       return;
     }
 
@@ -175,26 +175,8 @@ const PlanningCanvas: React.FC<{
     );
     const nodeById = new Map(network.nodes.map(node => [node.id, node]));
     const zoneLabels: Array<{ x: number; y: number; text: string }> = [];
-    const physicalNeighborsByNode = new Map<string, Array<{ neighborId: string; axis: 'ns' | 'ew' }>>();
     const physicalRoads = buildPhysicalRoads(network);
     const nodeRadiusHint = new Map<string, number>();
-
-    network.edges.forEach(edge => {
-      const fromNode = nodeById.get(edge.from_node);
-      const toNode = nodeById.get(edge.to_node);
-      if (!fromNode || !toNode) return;
-      const axis: 'ns' | 'ew' = Math.abs(toNode.x - fromNode.x) >= Math.abs(toNode.y - fromNode.y) ? 'ew' : 'ns';
-      const fromList = physicalNeighborsByNode.get(edge.from_node) || [];
-      if (!fromList.some(item => item.neighborId === edge.to_node)) {
-        fromList.push({ neighborId: edge.to_node, axis });
-        physicalNeighborsByNode.set(edge.from_node, fromList);
-      }
-      const toList = physicalNeighborsByNode.get(edge.to_node) || [];
-      if (!toList.some(item => item.neighborId === edge.from_node)) {
-        toList.push({ neighborId: edge.from_node, axis });
-        physicalNeighborsByNode.set(edge.to_node, toList);
-      }
-    });
 
     physicalRoads.forEach(road => {
       const roadWidth = Math.max(1.6, road.totalLanes * 1.35);
@@ -307,46 +289,33 @@ const PlanningCanvas: React.FC<{
     trafficLights.forEach(light => {
       const node = nodeById.get(light.node_id);
       if (!node) return;
-      const neighbors = physicalNeighborsByNode.get(light.node_id) || [];
+      const p = worldToScreen(node.x, node.y);
+      const nsColor = getSignalColor(getDirectionalSignalState(light, 'ns'));
+      const ewColor = getSignalColor(getDirectionalSignalState(light, 'ew'));
 
-      neighbors.forEach(({ neighborId, axis }) => {
-        const neighbor = nodeById.get(neighborId);
-        if (!neighbor) return;
-        const nodeScreen = worldToScreen(node.x, node.y);
-        const neighborScreen = worldToScreen(neighbor.x, neighbor.y);
-        const dx = neighborScreen.x - nodeScreen.x;
-        const dy = neighborScreen.y - nodeScreen.y;
-        const length = Math.hypot(dx, dy);
-        if (length < 8) return;
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
 
-        const midX = nodeScreen.x + dx * 0.5;
-        const midY = nodeScreen.y + dy * 0.5;
-        const ux = dx / length;
-        const uy = dy / length;
-        const state = getDirectionalSignalState(light, axis);
-        const color = getSignalColor(state);
-        const bodyLength = 10;
-        const headLength = 5;
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = nsColor;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - 6);
+      ctx.lineTo(p.x, p.y + 6);
+      ctx.stroke();
 
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.moveTo(midX - ux * bodyLength * 0.5, midY - uy * bodyLength * 0.5);
-        ctx.lineTo(midX + ux * bodyLength * 0.5, midY + uy * bodyLength * 0.5);
-        ctx.stroke();
-
-        const tipX = midX + ux * (bodyLength * 0.5 + headLength * 0.35);
-        const tipY = midY + uy * (bodyLength * 0.5 + headLength * 0.35);
-        const px = -uy;
-        const py = ux;
-        ctx.beginPath();
-        ctx.moveTo(tipX, tipY);
-        ctx.lineTo(tipX - ux * headLength - px * 3.4, tipY - uy * headLength - py * 3.4);
-        ctx.lineTo(tipX - ux * headLength + px * 3.4, tipY - uy * headLength + py * 3.4);
-        ctx.closePath();
-        ctx.fill();
-      });
+      ctx.strokeStyle = ewColor;
+      ctx.beginPath();
+      ctx.moveTo(p.x - 6, p.y);
+      ctx.lineTo(p.x + 6, p.y);
+      ctx.stroke();
+      ctx.restore();
     });
 
     ctx.font = '12px sans-serif';
@@ -388,7 +357,6 @@ const PlanningCanvas: React.FC<{
     });
   }, []);
 
-  // 使用原生事件监听以确保 preventDefault 有效（阻止页面缩放）
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -458,7 +426,7 @@ const PlanningCanvas: React.FC<{
       >
         <span>{viewState.zoom.toFixed(2)}x</span>
         <Button size="small" onClick={resetView}>
-          重置视图
+          Reset View
         </Button>
       </div>
       <canvas
@@ -570,7 +538,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                   City Birth Studio
                 </Typography.Title>
                 <Typography.Text style={{ color: '#475569' }}>
-                  观看城市从初始路网逐渐生长，支持 2D 平面视图和沉浸式 3D 漫游体验
+                  Watch the city grow from an initial network with both a 2D planning view and an immersive 3D roaming view.
                 </Typography.Text>
               </div>
             </Space>
@@ -578,16 +546,16 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
 
           <Space size={12} wrap>
             <Tag color={isRunning ? 'cyan' : 'default'} style={{ padding: '6px 12px', borderRadius: 999 }}>
-              {isRunning ? '运行中' : '已停止'}
+              {isRunning ? 'Running' : 'Stopped'}
             </Tag>
             <Button type={isRunning ? 'default' : 'primary'} icon={<PlayCircleOutlined />} onClick={onStart} disabled={isRunning}>
-              开始
+              Start
             </Button>
             <Button icon={<PauseCircleOutlined />} onClick={onPause} disabled={!isRunning}>
-              暂停
+              Pause
             </Button>
             <Button icon={<ReloadOutlined />} onClick={onReset}>
-              重置
+              Reset
             </Button>
           </Space>
         </div>
@@ -600,14 +568,14 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
           title={
             <Space size={10}>
               <BranchesOutlined style={{ color: '#0f62fe' }} />
-              <span style={{ color: '#0f172a' }}>配置与控制</span>
+              <span style={{ color: '#0f172a' }}>Configuration & Control</span>
             </Space>
           }
           headStyle={{ borderBottom: '1px solid rgba(15, 23, 42, 0.08)' }}
           extra={
             <Space size={10} wrap>
               <Button icon={<SettingOutlined />} onClick={() => setShowConfig(prev => !prev)}>
-                {showConfig ? '隐藏配置' : '显示配置'}
+                {showConfig ? 'Hide Config' : 'Show Config'}
               </Button>
               <Segmented
                 value={viewMode}
@@ -657,8 +625,8 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
           bodyStyle={{ padding: 18 }}
           title={
             <Space size={10}>
-              <span style={{ color: '#0f172a' }}>{viewMode === '2d' ? '2D 城市视图' : '3D 城市视图'}</span>
-              <Badge status={isRunning ? 'processing' : 'default'} text={isRunning ? '实时渲染' : '暂停'} />
+              <span style={{ color: '#0f172a' }}>{viewMode === '2d' ? '2D City View' : '3D City View'}</span>
+              <Badge status={isRunning ? 'processing' : 'default'} text={isRunning ? 'Live Render' : 'Paused'} />
             </Space>
           }
           headStyle={{ borderBottom: '1px solid rgba(15, 23, 42, 0.08)' }}
@@ -707,7 +675,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
               title={
                 <Space size={10}>
                   <BranchesOutlined style={{ color: '#16803c' }} />
-                  <span>路网扩展记录</span>
+                  <span>Road Expansion Log</span>
                 </Space>
               }
             >
@@ -732,7 +700,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                     }))}
                 />
               ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无路网扩展记录" />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No road expansion records yet" />
               )}
             </Card>
           </Col>
@@ -746,7 +714,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
               title={
                 <Space size={10}>
                   <ClusterOutlined style={{ color: '#0f62fe' }} />
-                  <span>功能区域</span>
+                  <span>Functional Zones</span>
                 </Space>
               }
             >
@@ -786,7 +754,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                   ))}
                 </Space>
               ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无功能区域数据" />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No zone data available" />
               )}
             </Card>
           </Col>
@@ -800,7 +768,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
           title={
             <Space size={10}>
               <MessageOutlined style={{ color: '#0f62fe' }} />
-              <span>LLM 决策记录</span>
+              <span>LLM Decision Records</span>
             </Space>
           }
           extra={
@@ -809,10 +777,10 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
               value={llmDecisionFilter}
               onChange={value => setLlmDecisionFilter(value as 'all' | 'road_expansion' | 'zone_batch_count' | 'zone_location_type')}
               options={[
-                { label: '全部', value: 'all' },
-                { label: '道路扩展', value: 'road_expansion' },
-                { label: '区域批次', value: 'zone_batch_count' },
-                { label: '区域位置', value: 'zone_location_type' }
+                { label: 'All', value: 'all' },
+                { label: 'Road Expansion', value: 'road_expansion' },
+                { label: 'Zone Batch', value: 'zone_batch_count' },
+                { label: 'Zone Location', value: 'zone_location_type' }
               ]}
             />
           }
@@ -831,7 +799,6 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                       overflow: 'hidden'
                     }}
                   >
-                    {/* 头部 - 始终显示 */}
                     <div
                       onClick={() => toggleDecisionExpand(item.id)}
                       style={{
@@ -848,7 +815,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                     >
                       <Space size={[8, 8]} wrap>
                         <Tag color={item.agent_type === 'planning' ? 'blue' : 'green'}>
-                          {item.agent_type === 'planning' ? '路网规划' : '城市规划'}
+                          {item.agent_type === 'planning' ? 'Road Planning' : 'Urban Zoning'}
                         </Tag>
                         <Tag color="geekblue">{llmCategoryLabelMap[item.category] || item.category}</Tag>
                         <Tag color={item.status === 'success' ? 'success' : item.status === 'fallback' ? 'warning' : 'default'}>
@@ -856,7 +823,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                         </Tag>
                         {typeof item.adopted === 'boolean' && (
                           <Tag color={item.adopted ? 'success' : 'default'}>
-                            {item.adopted ? '已采纳' : '未采纳'}
+                            {item.adopted ? 'Adopted' : 'Not Adopted'}
                           </Tag>
                         )}
                       </Space>
@@ -872,7 +839,6 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                       </Space>
                     </div>
 
-                    {/* 摘要 - 始终显示 */}
                     <div
                       style={{
                         padding: '0 14px 12px',
@@ -881,11 +847,10 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                       onClick={() => toggleDecisionExpand(item.id)}
                     >
                       <Typography.Text strong style={{ color: '#0f172a' }}>
-                        {item.summary || 'LLM 决策'}
+                        {item.summary || 'LLM Decision'}
                       </Typography.Text>
                     </div>
 
-                    {/* 展开内容 */}
                     {isExpanded && (
                       <div style={{ padding: '0 14px 14px' }}>
                         <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
@@ -894,14 +859,14 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                             onClick={() => toggleDecisionExpand(item.id)}
                             style={{ borderRadius: 8 }}
                           >
-                            收起详情
+                            Collapse
                           </Button>
                         </div>
 
                         {item.parsed_decision && Object.keys(item.parsed_decision).length > 0 && (
                           <div style={{ marginBottom: 12 }}>
                             <Typography.Text style={{ color: '#334155', fontSize: 12, display: 'block', marginBottom: 6, fontWeight: 500 }}>
-                              决策内容
+                              Parsed Decision
                             </Typography.Text>
                             <pre style={{ margin: 0, padding: 10, background: '#ffffff', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#1e293b', fontSize: 12, fontFamily: 'Consolas, Monaco, monospace', border: '1px solid rgba(15, 23, 42, 0.06)' }}>
                               {JSON.stringify(item.parsed_decision, null, 2)}
@@ -914,16 +879,16 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
                             Prompt
                           </Typography.Text>
                           <pre style={{ margin: 0, padding: 10, background: '#ffffff', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#475569', fontSize: 12, fontFamily: 'Consolas, Monaco, monospace', maxHeight: 200, overflow: 'auto', border: '1px solid rgba(15, 23, 42, 0.06)' }}>
-                            {item.prompt || '无'}
+                            {item.prompt || 'None'}
                           </pre>
                         </div>
 
                         <div>
                           <Typography.Text style={{ color: '#334155', fontSize: 12, display: 'block', marginBottom: 6, fontWeight: 500 }}>
-                            原始响应
+                            Raw Response
                           </Typography.Text>
                           <pre style={{ margin: 0, padding: 10, background: '#ffffff', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#475569', fontSize: 12, fontFamily: 'Consolas, Monaco, monospace', maxHeight: 200, overflow: 'auto', border: '1px solid rgba(15, 23, 42, 0.06)' }}>
-                            {item.response || '无'}
+                            {item.response || 'None'}
                           </pre>
                         </div>
                       </div>
@@ -933,7 +898,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
               })}
             </Space>
           ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无 LLM 决策记录" />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No LLM decision records yet" />
           )}
         </Card>
 
@@ -945,7 +910,7 @@ export const RoadPlanningView: React.FC<RoadPlanningViewProps> = ({
           title={
             <Space size={10}>
               <ClusterOutlined style={{ color: '#0f62fe' }} />
-              <span>智能体记忆</span>
+              <span>Agent Memory</span>
             </Space>
           }
         >

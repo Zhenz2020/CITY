@@ -15,7 +15,6 @@ interface AIChainViewProps {
 }
 
 export const AIChainView: React.FC<AIChainViewProps> = ({
-  network,
   vehicles,
   selectedAgentId,
   decisions,
@@ -25,22 +24,22 @@ export const AIChainView: React.FC<AIChainViewProps> = ({
 
   return (
     <div style={{ padding: 16 }}>
-      <Card title={<><RobotOutlined /> AI决策链</>}>
+      <Card title={<><RobotOutlined /> AI Decision Chain</>}>
         {selectedVehicle ? (
           <div>
-            <h3>选中车辆: {selectedVehicle.id}</h3>
-            <p>类型: {selectedVehicle.vehicle_type}</p>
-            <p>速度: {selectedVehicle.speed.toFixed(2)} m/s</p>
-            <h4>决策历史:</h4>
+            <h3>Selected Vehicle: {selectedVehicle.id}</h3>
+            <p>Type: {selectedVehicle.vehicle_type}</p>
+            <p>Speed: {selectedVehicle.speed.toFixed(2)} m/s</p>
+            <h4>Decision History:</h4>
             {vehicleDecisions.map((d, idx) => (
               <Card key={idx} size="small" style={{ marginBottom: 8 }}>
-                <p>动作: {d.decision?.action}</p>
-                <p>原因: {d.decision?.reason}</p>
+                <p>Action: {d.decision?.action}</p>
+                <p>Reason: {d.decision?.reason}</p>
               </Card>
             ))}
           </div>
         ) : (
-          <Empty description="点击车辆查看AI决策链" />
+          <Empty description="Click a vehicle to inspect its AI decision chain" />
         )}
       </Card>
     </div>

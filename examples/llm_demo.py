@@ -30,7 +30,8 @@ def create_simple_network():
     network.create_edge(n1, n2, num_lanes=2)
     network.create_edge(n2, n3, num_lanes=2)
 
-    n2.traffic_light = TrafficLight(n2, cycle_time=60, green_duration=30)
+    if network.needs_traffic_light(n2):
+        network.register_traffic_light(n2, TrafficLight(n2, cycle_time=60, green_duration=30))
 
     return network, [n1, n2, n3]
 
@@ -181,7 +182,8 @@ def demo_llm_traffic_manager():
 
     # 创建使用LLM的交通管理者
     manager = TrafficManager(environment=env, use_llm=True)
-    manager.add_control_node(nodes[1])
+    if nodes[1].traffic_light:
+        manager.add_control_node(nodes[1])
     env.add_agent(manager)
 
     # 模拟拥堵场景

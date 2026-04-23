@@ -8,7 +8,7 @@ interface DecisionLogProps {
 
 export const DecisionLog: React.FC<DecisionLogProps> = ({ decisions }) => {
   return (
-    <Card title="决策日志" size="small" style={{ maxHeight: 300, overflow: 'auto' }}>
+    <Card title="Decision Log" size="small" style={{ maxHeight: 300, overflow: 'auto' }}>
       <List
         size="small"
         dataSource={decisions.slice(-20).reverse()}

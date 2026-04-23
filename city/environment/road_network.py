@@ -73,6 +73,17 @@ class Node:
         """添加出向路段。"""
         self.outgoing_edges.append(edge)
 
+    def connected_node_ids(self) -> set[str]:
+        """获取该节点直接连接的唯一相邻节点ID。"""
+        connected = {edge.from_node.node_id for edge in self.incoming_edges}
+        connected.update(edge.to_node.node_id for edge in self.outgoing_edges)
+        connected.discard(self.node_id)
+        return connected
+
+    def physical_degree(self) -> int:
+        """获取物理连接道路数量，双向边只按一条相邻道路计算。"""
+        return len(self.connected_node_ids())
+
 
 class TrafficLightState(Enum):
     """交通信号灯状态。"""
@@ -305,6 +316,25 @@ class RoadNetwork:
         """添加路段到网络。"""
         self.edges[edge.edge_id] = edge
         return edge
+
+    def node_physical_degree(self, node: Node) -> int:
+        """获取节点的唯一相邻道路数量。"""
+        return node.physical_degree()
+
+    def needs_traffic_light(self, node: Node, min_roads: int = 3) -> bool:
+        """判断节点是否需要红绿灯：丁字、十字或更多道路连接才需要。"""
+        return self.node_physical_degree(node) >= min_roads
+
+    def register_traffic_light(self, node: Node, traffic_light: TrafficLight) -> None:
+        """注册节点红绿灯到道路网络。"""
+        node.is_intersection = True
+        node.traffic_light = traffic_light
+        self.traffic_lights[node.node_id] = traffic_light
+
+    def unregister_traffic_light(self, node: Node) -> None:
+        """移除节点红绿灯注册。"""
+        node.traffic_light = None
+        self.traffic_lights.pop(node.node_id, None)
 
     def create_edge(
         self,

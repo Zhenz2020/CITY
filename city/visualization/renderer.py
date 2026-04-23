@@ -206,7 +206,7 @@ class TrafficVisualizer:
 
         # 信号灯状态指示器
         light_circle = Circle(
-            (x + 12, y + 12), 4,
+            (x, y), 5,
             facecolor='red',
             edgecolor='black',
             linewidth=1,

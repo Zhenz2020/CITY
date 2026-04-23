@@ -47,12 +47,16 @@ def create_simple_intersection() -> tuple[RoadNetwork, dict[str, Node]]:
     network.create_edge(center, west_out, num_lanes=2)
 
     # 为交叉口添加信号灯
-    center.traffic_light = TrafficLight(
-        node=center,
-        cycle_time=60.0,
-        green_duration=30.0,
-        yellow_duration=5.0
-    )
+    if network.needs_traffic_light(center):
+        network.register_traffic_light(
+            center,
+            TrafficLight(
+                node=center,
+                cycle_time=60.0,
+                green_duration=30.0,
+                yellow_duration=5.0
+            )
+        )
 
     # 返回网络和节点字典
     nodes = {
@@ -88,7 +92,8 @@ def run_simple_simulation():
 
     # 添加交通管理者
     manager = TrafficManager(environment=env)
-    manager.add_control_node(nodes['center'])
+    if nodes['center'].traffic_light:
+        manager.add_control_node(nodes['center'])
     env.add_agent(manager)
     print(f"\n添加交通管理者: {manager}")
 

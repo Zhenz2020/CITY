@@ -17,6 +17,7 @@ import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from city.llm.text_normalizer import normalize_decision_text_fields
 from city.urban_planning.zone import Zone, ZoneType, ZoneManager
 from city.utils.vector import Vector2D
 
@@ -502,41 +503,40 @@ class RealisticZoningPlanner:
             # 收集周边信息
             nearby_info = self._collect_nearby_info(center)
             
-            prompt = f"""你是一位资深城市规划专家。请评估以下选址方案是否合理。
+            prompt = f"""You are a senior urban planning reviewer.
+Evaluate whether the following zoning proposal is reasonable.
 
-## 选址方案
-- 区域类型: {zone_type.display_name}
-- 位置: ({center.x:.0f}, {center.y:.0f})
-- 尺寸: {width:.0f}m x {height:.0f}m
-- 面积: {width * height:.0f}m²
+Proposal:
+- Zone type: {zone_type.name}
+- Location: ({center.x:.0f}, {center.y:.0f})
+- Size: {width:.0f}m x {height:.0f}m
+- Area: {width * height:.0f}m²
 
-## 自动评估结果
-- 综合评分: {evaluation['total_score']:.2f}/1.0
-- 兼容性评分: {evaluation['scores'].get('compatibility', 0):.2f}
-- 服务覆盖评分: {evaluation['scores'].get('service_coverage', 0):.2f}
-- 道路可达性: {evaluation['scores'].get('accessibility', 0):.2f}
+Automatic evaluation:
+- Overall score: {evaluation['total_score']:.2f}/1.0
+- Compatibility: {evaluation['scores'].get('compatibility', 0):.2f}
+- Service coverage: {evaluation['scores'].get('service_coverage', 0):.2f}
+- Road accessibility: {evaluation['scores'].get('accessibility', 0):.2f}
 
-## 优点
-{chr(10).join(['- ' + adv for adv in evaluation.get('advantages', [])]) if evaluation.get('advantages') else '- 暂无'}
+Advantages:
+{chr(10).join(['- ' + adv for adv in evaluation.get('advantages', [])]) if evaluation.get('advantages') else '- none'}
 
-## 问题
-{chr(10).join(['- ' + issue for issue in evaluation.get('issues', [])]) if evaluation.get('issues') else '- 暂无'}
+Issues:
+{chr(10).join(['- ' + issue for issue in evaluation.get('issues', [])]) if evaluation.get('issues') else '- none'}
 
-## 周边情况
-- 200米内区域: {nearby_info['zones_200m']}
-- 500米内住宅区: {nearby_info['residential_500m']} 个
-- 最近道路节点: {nearby_info['nearest_road']:.0f}m
+Nearby context:
+- Zones within 200m: {nearby_info['zones_200m']}
+- Residential zones within 500m: {nearby_info['residential_500m']}
+- Nearest road node: {nearby_info['nearest_road']:.0f}m
 
-## 输出格式
-请返回JSON格式评估:
+Return JSON only, and write every explanation in English:
 {{
-    "is_approved": true/false,  // 是否批准此选址
-    "score": 0.0-1.0,          // 你的评分
-    "reasoning": "详细评估理由",
-    "suggestions": "改进建议（如有）",
-    "urban_planning_principles": "应用的城市规划原则"
-}}
-"""
+  "is_approved": true,
+  "score": 0.0,
+  "reasoning": "detailed evaluation reason",
+  "suggestions": "improvement suggestions",
+  "urban_planning_principles": "planning principles applied"
+}}"""
             
             llm_manager = self._get_llm_manager()
             if llm_manager:
@@ -546,7 +546,12 @@ class RealisticZoningPlanner:
                     start = response.find('{')
                     end = response.rfind('}')
                     if start != -1 and end != -1:
-                        result = json.loads(response[start:end+1])
+                        result = normalize_decision_text_fields(
+                            json.loads(response[start:end+1]),
+                            action_key='is_approved',
+                            text_fields=("reasoning", "suggestions", "urban_planning_principles"),
+                            list_fields=(),
+                        )
                         self.last_llm_decision = {
                             'zone_type': zone_type.name,
                             'center': {'x': center.x, 'y': center.y},
@@ -573,7 +578,7 @@ class RealisticZoningPlanner:
         for zone in self.zone_manager.zones.values():
             dist = center.distance_to(zone.center)
             if dist <= 200:
-                info['zones_200m'].append(f"{zone.zone_type.display_name}({dist:.0f}m)")
+                info['zones_200m'].append(f"{zone.zone_type.name} ({dist:.0f}m)")
         
         # 500米内的住宅区
         info['residential_500m'] = self._count_nearby_zones(
@@ -587,7 +592,7 @@ class RealisticZoningPlanner:
                 for n in self.environment.road_network.nodes.values()
             )
         
-        info['zones_200m'] = ', '.join(info['zones_200m']) if info['zones_200m'] else '无'
+        info['zones_200m'] = ', '.join(info['zones_200m']) if info['zones_200m'] else 'none'
         return info
     
     def find_optimal_location(

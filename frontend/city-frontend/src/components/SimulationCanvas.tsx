@@ -131,9 +131,12 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
       const pos = worldToScreen(node.x, node.y);
       
       ctx.fillStyle = COLORS[light.state] || COLORS.RED;
+      ctx.strokeStyle = '#1f2937';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(pos.x + 15, pos.y - 15, 6, 0, Math.PI * 2);
+      ctx.arc(pos.x, pos.y, 7, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
     });
   }, [network, vehicles, trafficLights, worldToScreen, width, height]);
 

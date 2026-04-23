@@ -13,6 +13,7 @@ import random
 from typing import TYPE_CHECKING, Any
 
 from city.agents.base import AgentType, BaseAgent
+from city.llm.text_normalizer import normalize_decision_text_fields, normalize_reason_text
 from city.urban_planning.zone import Zone, ZoneType, ZoneManager
 from city.urban_planning.realistic_zoning import RealisticZoningPlanner, ZoningConstraints
 from city.utils.vector import Vector2D
@@ -316,13 +317,13 @@ class ZoningAgent(BaseAgent):
             return None
         
         # 获取道路边缘位置候选点
-        road_side_locations = self._get_road_side_locations()
-        if not road_side_locations:
+        zoning_candidates = self._collect_zoning_candidates()
+        if not zoning_candidates:
             return None
         
         # 使用LLM选择最佳位置和功能类型
         if self.use_llm:
-            decision = self._llm_select_location_and_type(road_side_locations)
+            decision = self._llm_select_location_and_type(zoning_candidates)
             if decision:
                 self.record_decision(
                     {
@@ -336,7 +337,7 @@ class ZoningAgent(BaseAgent):
                 return decision
         
         # 回退到规则-based选址
-        decision = self._rule_select_location_and_type(road_side_locations)
+        decision = self._rule_select_location_and_type(zoning_candidates)
         if decision:
             self.record_decision(
                 {
@@ -348,6 +349,300 @@ class ZoningAgent(BaseAgent):
                 importance=5.0
             )
         return decision
+
+    def _collect_zoning_candidates(
+        self,
+        max_zone_types: int = 4,
+        max_candidates_per_type: int = 3,
+        max_candidates: int = 10
+    ) -> list[dict[str, Any]]:
+        """Collect block-first candidates for the next zoning decision."""
+        network_info = self._get_network_info()
+        bounds = network_info.get('bounds')
+        if not bounds:
+            return []
+
+        zone_types = self._prioritize_zone_types(max_zone_types=max_zone_types)
+        if not zone_types:
+            return []
+
+        all_candidates: list[dict[str, Any]] = []
+        for zone_type in zone_types:
+            type_candidates = self._build_block_candidates_for_type(
+                zone_type=zone_type,
+                max_candidates=max_candidates_per_type,
+            )
+            if not type_candidates:
+                fallback = self._build_fallback_candidate(zone_type, bounds)
+                if fallback:
+                    type_candidates.append(fallback)
+            all_candidates.extend(type_candidates)
+
+        unique_candidates: list[dict[str, Any]] = []
+        seen: set[tuple[str, int, int, int, int]] = set()
+        for candidate in all_candidates:
+            key = (
+                candidate['zone_type'].name,
+                round(candidate['center'].x),
+                round(candidate['center'].y),
+                round(candidate['width']),
+                round(candidate['height']),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_candidates.append(candidate)
+
+        priority_rank = {'high': 0, 'medium': 1, 'low': 2}
+        unique_candidates.sort(
+            key=lambda candidate: (
+                priority_rank.get(candidate.get('priority', 'medium'), 1),
+                -candidate.get('score', 0.0),
+                -candidate.get('fill_ratio', 0.0),
+                0 if candidate.get('is_block_fill') else 1,
+            )
+        )
+        return unique_candidates[:max_candidates]
+
+    def _prioritize_zone_types(self, max_zone_types: int = 4) -> list[ZoneType]:
+        """Pick a small set of zone types for the next planning round."""
+        needs = self._analyze_zoning_needs()
+        priority_rank = {'high': 0, 'medium': 1, 'low': 2}
+        ranked_types: list[tuple[int, int, int, ZoneType]] = []
+
+        for type_name, need in needs.items():
+            try:
+                zone_type = ZoneType[type_name]
+            except KeyError:
+                continue
+
+            gap = int(need.get('needed', 0)) - int(need.get('current', 0))
+            ranked_types.append(
+                (
+                    priority_rank.get(need.get('priority', 'medium'), 1),
+                    -gap,
+                    zone_type.priority,
+                    zone_type,
+                )
+            )
+
+        ranked_types.sort()
+        selected = [zone_type for _, _, _, zone_type in ranked_types]
+
+        fallback_order = [
+            ZoneType.RESIDENTIAL,
+            ZoneType.COMMERCIAL,
+            ZoneType.PARK,
+            ZoneType.OFFICE,
+            ZoneType.SCHOOL,
+            ZoneType.HOSPITAL,
+            ZoneType.INDUSTRIAL,
+        ]
+        for zone_type in fallback_order:
+            if zone_type not in selected:
+                selected.append(zone_type)
+
+        return selected[:max_zone_types]
+
+    def _build_block_candidates_for_type(
+        self,
+        zone_type: ZoneType,
+        max_candidates: int = 3
+    ) -> list[dict[str, Any]]:
+        """Generate candidates that fill road-enclosed blocks for one zone type."""
+        blocks = self.zoning_planner._detect_road_blocks()
+        if not blocks:
+            return []
+
+        need_info = self._analyze_zoning_needs().get(zone_type.name, {})
+        candidates: list[dict[str, Any]] = []
+        for block in blocks:
+            fitted = self._fit_block_dimensions(zone_type, block['width'], block['height'])
+            if not fitted:
+                continue
+
+            center = block['center']
+            width = fitted['width']
+            height = fitted['height']
+            evaluation = self.zoning_planner.evaluate_location(zone_type, center, width, height)
+            if not evaluation.get('is_suitable', False):
+                continue
+
+            block_score = self._score_block_for_zone_type(zone_type, block)
+            score = evaluation.get('total_score', 0.0) * 0.75 + block_score * 0.25
+            candidates.append({
+                'zone_type': zone_type,
+                'center': center,
+                'width': width,
+                'height': height,
+                'score': score,
+                'priority': need_info.get('priority', 'medium'),
+                'need_reason': need_info.get('reason', 'Balanced land-use growth'),
+                'evaluation': evaluation,
+                'llm_evaluation': None,
+                'candidate_source': 'road_block',
+                'is_block_fill': True,
+                'fill_ratio': fitted['fill_ratio'],
+                'block_area': block['area'],
+                'bounds': block.get('bounds'),
+            })
+
+        candidates.sort(
+            key=lambda candidate: (
+                -candidate.get('score', 0.0),
+                -candidate.get('fill_ratio', 0.0),
+            )
+        )
+        return candidates[:max_candidates]
+
+    def _build_fallback_candidate(
+        self,
+        zone_type: ZoneType,
+        bounds: dict[str, float],
+        attempts: int = 8
+    ) -> dict[str, Any] | None:
+        """Build a bounded fallback candidate when no enclosed block is usable."""
+        need_info = self._analyze_zoning_needs().get(zone_type.name, {})
+        limits = self._get_zone_size_limits(zone_type)
+        best_candidate: dict[str, Any] | None = None
+
+        for _ in range(attempts):
+            center = self.zoning_planner._generate_candidate_location(
+                zone_type,
+                bounds['min_x'],
+                bounds['max_x'],
+                bounds['min_y'],
+                bounds['max_y'],
+            )
+            if not center:
+                continue
+
+            width = random.uniform(limits['min_width'], limits['max_width'])
+            height = random.uniform(limits['min_height'], limits['max_height'])
+            if width * height > limits['max_area']:
+                scale = math.sqrt(limits['max_area'] / (width * height))
+                width *= scale
+                height *= scale
+
+            evaluation = self.zoning_planner.evaluate_location(zone_type, center, width, height)
+            if not evaluation.get('is_suitable', False):
+                continue
+
+            candidate = {
+                'zone_type': zone_type,
+                'center': center,
+                'width': width,
+                'height': height,
+                'score': evaluation.get('total_score', 0.0),
+                'priority': need_info.get('priority', 'medium'),
+                'need_reason': need_info.get('reason', 'Balanced land-use growth'),
+                'evaluation': evaluation,
+                'llm_evaluation': None,
+                'candidate_source': 'fallback',
+                'is_block_fill': False,
+                'fill_ratio': 0.0,
+                'block_area': width * height,
+                'bounds': None,
+            }
+            if best_candidate is None or candidate['score'] > best_candidate['score']:
+                best_candidate = candidate
+
+        return best_candidate
+
+    def _get_zone_size_limits(self, zone_type: ZoneType) -> dict[str, float]:
+        """Return hard caps used to prevent oversized zoning blocks."""
+        limits = {
+            ZoneType.RESIDENTIAL: {'max_width': 210.0, 'max_height': 190.0, 'max_area': 28000.0},
+            ZoneType.COMMERCIAL: {'max_width': 180.0, 'max_height': 170.0, 'max_area': 22000.0},
+            ZoneType.INDUSTRIAL: {'max_width': 250.0, 'max_height': 220.0, 'max_area': 42000.0},
+            ZoneType.HOSPITAL: {'max_width': 170.0, 'max_height': 170.0, 'max_area': 22000.0},
+            ZoneType.SCHOOL: {'max_width': 200.0, 'max_height': 180.0, 'max_area': 26000.0},
+            ZoneType.PARK: {'max_width': 220.0, 'max_height': 210.0, 'max_area': 32000.0},
+            ZoneType.OFFICE: {'max_width': 180.0, 'max_height': 180.0, 'max_area': 22000.0},
+            ZoneType.MIXED_USE: {'max_width': 200.0, 'max_height': 180.0, 'max_area': 26000.0},
+            ZoneType.GOVERNMENT: {'max_width': 170.0, 'max_height': 170.0, 'max_area': 20000.0},
+            ZoneType.SHOPPING: {'max_width': 190.0, 'max_height': 180.0, 'max_area': 24000.0},
+        }.get(zone_type, {'max_width': 180.0, 'max_height': 180.0, 'max_area': 22000.0})
+
+        min_width = max(50.0, min(self.max_zone_size, self.min_zone_size))
+        min_height = max(50.0, min(self.max_zone_size, self.min_zone_size * 0.85))
+        min_area = max(zone_type.min_size * 0.7, min_width * min_height * 0.8)
+        return {
+            'min_width': min_width,
+            'min_height': min_height,
+            'min_area': min_area,
+            'max_width': max(limits['max_width'], min_width),
+            'max_height': max(limits['max_height'], min_height),
+            'max_area': max(limits['max_area'], min_area),
+        }
+
+    def _fit_block_dimensions(
+        self,
+        zone_type: ZoneType,
+        block_width: float,
+        block_height: float
+    ) -> dict[str, float] | None:
+        """Fit a zone into a road block while keeping hard size caps."""
+        limits = self._get_zone_size_limits(zone_type)
+        clearance = min(10.0, block_width * 0.08, block_height * 0.08)
+        width = max(0.0, block_width - clearance)
+        height = max(0.0, block_height - clearance)
+
+        width = min(width, limits['max_width'])
+        height = min(height, limits['max_height'])
+        area = width * height
+        if area > limits['max_area'] and area > 0:
+            scale = math.sqrt(limits['max_area'] / area)
+            width *= scale
+            height *= scale
+            area = width * height
+
+        if width < limits['min_width'] or height < limits['min_height']:
+            return None
+        if area < limits['min_area']:
+            return None
+
+        fill_ratio = area / max(block_width * block_height, 1.0)
+        return {
+            'width': width,
+            'height': height,
+            'fill_ratio': fill_ratio,
+        }
+
+    def _score_block_for_zone_type(self, zone_type: ZoneType, block: dict[str, Any]) -> float:
+        """Score how well a block matches a zone type before the final LLM choice."""
+        area = block['area']
+        center = block['center']
+        network_info = self._get_network_info()
+        bounds = network_info.get('bounds') or {}
+        city_center_x = (bounds.get('min_x', center.x) + bounds.get('max_x', center.x)) / 2
+        city_center_y = (bounds.get('min_y', center.y) + bounds.get('max_y', center.y)) / 2
+        max_radius = max(
+            bounds.get('max_x', center.x) - bounds.get('min_x', center.x),
+            bounds.get('max_y', center.y) - bounds.get('min_y', center.y),
+            1.0,
+        ) / 2
+        center_distance = math.sqrt((center.x - city_center_x) ** 2 + (center.y - city_center_y) ** 2)
+        center_score = max(0.0, 1.0 - center_distance / max_radius)
+        edge_score = 1.0 - center_score
+
+        if zone_type == ZoneType.RESIDENTIAL:
+            target_area = 18000.0
+            return max(0.0, 1.0 - abs(area - target_area) / target_area)
+        if zone_type == ZoneType.COMMERCIAL:
+            return center_score * 0.65 + min(1.0, area / 18000.0) * 0.35
+        if zone_type == ZoneType.INDUSTRIAL:
+            return edge_score * 0.55 + min(1.0, area / 25000.0) * 0.45
+        if zone_type == ZoneType.SCHOOL:
+            target_area = 14000.0
+            return max(0.0, 1.0 - abs(area - target_area) / target_area)
+        if zone_type == ZoneType.HOSPITAL:
+            return center_score * 0.45 + min(1.0, area / 20000.0) * 0.55
+        if zone_type == ZoneType.PARK:
+            return 0.5 + min(0.5, area / 32000.0)
+        if zone_type == ZoneType.OFFICE:
+            return center_score * 0.6 + min(1.0, area / 16000.0) * 0.4
+        return min(1.0, area / 18000.0)
     
     def _get_road_side_locations(self) -> list[dict]:
         """获取道路边缘的候选位置（沿道路布置）。"""
@@ -473,8 +768,8 @@ class ZoningAgent(BaseAgent):
         
         return None
     
-    def _parse_llm_location_response(self, response: str, locations: list[dict]) -> dict[str, Any] | None:
-        """解析LLM的位置选择响应。"""
+    def _parse_llm_location_response(self, response: str, candidates: list[dict]) -> dict[str, Any] | None:
+        """Parse an LLM selection over the prepared zoning candidate list."""
         try:
             start = response.find('{')
             end = response.rfind('}')
@@ -483,100 +778,83 @@ class ZoningAgent(BaseAgent):
             
             result = json.loads(response[start:end+1])
             
-            index = result.get('selected_index', 0)
-            if index < 0 or index >= len(locations):
+            index = int(result.get('selected_index', 0))
+            if index < 0 or index >= len(candidates):
                 index = 0
             
-            selected = locations[index]
-            zone_type_name = result.get('zone_type', 'RESIDENTIAL')
-            
-            try:
-                zone_type = ZoneType[zone_type_name]
-            except KeyError:
-                zone_type = ZoneType.RESIDENTIAL
-            
-            # 根据道路方向确定区域尺寸
-            if selected['road_orientation'] == 'horizontal':
-                width = random.uniform(80, 150)
-                height = random.uniform(60, 100)
-            else:
-                width = random.uniform(60, 100)
-                height = random.uniform(80, 150)
+            selected = candidates[index]
+            zone_type = selected['zone_type']
+            reason = normalize_reason_text(
+                result.get('reason') or selected.get('need_reason') or 'LLM selected best candidate',
+                action='create_zone',
+                fallback='LLM selected the best zoning candidate.',
+            )
+            confidence = float(result.get('confidence', selected.get('score', 0.8)))
             
             return {
                 'action': 'create_zone',
                 'zone_type': zone_type,
-                'center': Vector2D(selected['x'], selected['y']),
-                'width': width,
-                'height': height,
-                'name': f"{zone_type.display_name}_{len(self.zone_manager.zones) + 1}",
-                'reason': result.get('reason', 'LLM规划'),
-                'priority': 'high',
-                'confidence': result.get('confidence', 0.8),
+                'center': selected['center'],
+                'width': selected['width'],
+                'height': selected['height'],
+                'name': f"{zone_type.name}_{len(self.zone_manager.zones) + 1}",
+                'reason': reason,
+                'priority': selected.get('priority', 'medium'),
+                'confidence': max(0.0, min(1.0, confidence)),
                 'is_llm': True,
-                'road_side': selected['side'],
-                'edge_id': selected['edge_id']
+                'score': selected.get('score', 0.0),
+                'evaluation': selected.get('evaluation', {}),
+                'llm_evaluation': {
+                    'is_approved': True,
+                    'score': max(0.0, min(1.0, confidence)),
+                    'reasoning': reason,
+                },
+                'candidate_source': selected.get('candidate_source', 'unknown'),
+                'is_block_fill': selected.get('is_block_fill', False),
+                'fill_ratio': selected.get('fill_ratio', 0.0),
+                'block_area': selected.get('block_area'),
+                'bounds': selected.get('bounds'),
             }
             
         except Exception as e:
             print(f"[ZoningAgent] 解析LLM响应失败: {e}")
             return None
     
-    def _rule_select_location_and_type(self, locations: list[dict]) -> dict[str, Any] | None:
-        """使用规则选择位置和功能类型。"""
-        if not locations:
+    def _rule_select_location_and_type(self, candidates: list[dict]) -> dict[str, Any] | None:
+        """Select the best prepared candidate without the LLM."""
+        if not candidates:
             return None
         
-        # 分析需求
-        needs = self._analyze_zoning_needs()
-        if not needs:
-            return None
-        
-        # 选择最高优先级的需求
-        priority_order = ['high', 'medium', 'low']
-        selected_type = None
-        selected_need = None
-        
-        for priority in priority_order:
-            for type_name, need in needs.items():
-                if need['priority'] == priority:
-                    selected_type = type_name
-                    selected_need = need
-                    break
-            if selected_type:
-                break
-        
-        if not selected_type:
-            return None
-        
-        try:
-            zone_type = ZoneType[selected_type]
-        except KeyError:
-            return None
-        
-        # 随机选择一个位置
-        selected = random.choice(locations)
-        
-        # 根据道路方向确定区域尺寸
-        if selected['road_orientation'] == 'horizontal':
-            width = random.uniform(80, 150)
-            height = random.uniform(60, 100)
-        else:
-            width = random.uniform(60, 100)
-            height = random.uniform(80, 150)
+        priority_rank = {'high': 0, 'medium': 1, 'low': 2}
+        selected = sorted(
+            candidates,
+            key=lambda candidate: (
+                priority_rank.get(candidate.get('priority', 'medium'), 1),
+                -candidate.get('score', 0.0),
+                -candidate.get('fill_ratio', 0.0),
+                0 if candidate.get('is_block_fill') else 1,
+            )
+        )[0]
+        zone_type = selected['zone_type']
         
         return {
             'action': 'create_zone',
             'zone_type': zone_type,
-            'center': Vector2D(selected['x'], selected['y']),
-            'width': width,
-            'height': height,
-            'name': f"{zone_type.display_name}_{len(self.zone_manager.zones) + 1}",
-            'reason': selected_need.get('reason', '规则规划'),
-            'priority': selected_need.get('priority', 'medium'),
+            'center': selected['center'],
+            'width': selected['width'],
+            'height': selected['height'],
+            'name': f"{zone_type.name}_{len(self.zone_manager.zones) + 1}",
+            'reason': selected.get('need_reason', 'Rule-based candidate selection'),
+            'priority': selected.get('priority', 'medium'),
             'is_llm': False,
-            'road_side': selected['side'],
-            'edge_id': selected['edge_id']
+            'score': selected.get('score', 0.0),
+            'evaluation': selected.get('evaluation', {}),
+            'llm_evaluation': None,
+            'candidate_source': selected.get('candidate_source', 'unknown'),
+            'is_block_fill': selected.get('is_block_fill', False),
+            'fill_ratio': selected.get('fill_ratio', 0.0),
+            'block_area': selected.get('block_area'),
+            'bounds': selected.get('bounds'),
         }
     
     def _get_llm_manager(self):
@@ -609,7 +887,7 @@ class ZoningAgent(BaseAgent):
         if total_zones == 0:
             needs['RESIDENTIAL'] = {
                 'current': 0, 'needed': 1, 'priority': 'high',
-                'reason': '首个住宅区，奠定基础'
+                'reason': 'Establish the first residential district'
             }
             return needs
         
@@ -662,13 +940,13 @@ class ZoningAgent(BaseAgent):
         # 如果有明显缺口，优先补充
         if max_gap >= 1 and needed_type:
             reasons = {
-                'RESIDENTIAL': '增加居住容量',
-                'COMMERCIAL': '完善商业配套',
-                'OFFICE': '提供就业机会',
-                'INDUSTRIAL': '发展工业功能',
-                'SCHOOL': '教育设施配套',
-                'HOSPITAL': '医疗服务配套',
-                'PARK': '增加绿地空间'
+                'RESIDENTIAL': 'Increase housing capacity',
+                'COMMERCIAL': 'Improve commercial support',
+                'OFFICE': 'Provide employment capacity',
+                'INDUSTRIAL': 'Develop industrial capacity',
+                'SCHOOL': 'Expand education services',
+                'HOSPITAL': 'Expand medical services',
+                'PARK': 'Add green space'
             }
             needs[needed_type] = {
                 'current': current_counts[needed_type],
@@ -683,21 +961,21 @@ class ZoningAgent(BaseAgent):
                     'current': residential,
                     'needed': residential + 1,
                     'priority': 'medium',
-                    'reason': '扩展居住空间'
+                    'reason': 'Expand residential space'
                 }
             elif commercial < max(1, residential // 4):
                 needs['COMMERCIAL'] = {
                     'current': commercial,
                     'needed': commercial + 1,
                     'priority': 'medium',
-                    'reason': '增加商业服务'
+                    'reason': 'Add commercial services'
                 }
             elif parks < residential // 2:
                 needs['PARK'] = {
                     'current': parks,
                     'needed': parks + 1,
                     'priority': 'medium',
-                    'reason': '增加绿地公园'
+                    'reason': 'Add parks and green space'
                 }
         
         return needs
@@ -897,7 +1175,7 @@ class ZoningAgent(BaseAgent):
             center = decision['center']
             width = decision['width']
             height = decision['height']
-            name = decision.get('name', f'{zone_type.display_name}_新规划')
+            name = self.zone_manager.next_zone_name(zone_type)
             evaluation = decision.get('evaluation', {})
             llm_eval = decision.get('llm_evaluation', {})
             
@@ -956,6 +1234,8 @@ class ZoningAgent(BaseAgent):
             
             # 添加到管理器
             self.zone_manager.add_zone(zone)
+            name = zone.name
+            decision['name'] = name
             self.total_zones_planned += 1
             
             # 记录历史
@@ -964,11 +1244,14 @@ class ZoningAgent(BaseAgent):
                 'zone_id': zone.zone_id,
                 'zone_type': zone_type.name,
                 'name': name,
-                'center': {'x': center.x, 'y': center.y},
+                'center': {'x': zone.center.x, 'y': zone.center.y},
                 'area': zone.area,
                 'population': zone.population,
                 'reason': decision.get('reason', ''),
                 'score': decision.get('score', 0),
+                'candidate_source': decision.get('candidate_source', 'unknown'),
+                'is_block_fill': decision.get('is_block_fill', False),
+                'fill_ratio': decision.get('fill_ratio', 0.0),
                 'evaluation_summary': {
                     'total_score': evaluation.get('total_score', 0),
                     'advantages': evaluation.get('advantages', [])
@@ -1094,25 +1377,29 @@ class ZoningAgent(BaseAgent):
             planning_agent = self._get_road_planning_agent()
             expansion_count = len(getattr(planning_agent, 'expansion_history', [])) if planning_agent else 0
 
-            prompt = f"""你是城市规划总控，需要决定这一轮应该新增多少个功能区域。
-当前状态：
-- 道路节点数: {network_info.get('nodes', 0)}
-- 道路边数: {network_info.get('edges', 0)}
-- 当前功能区数量: {zone_stats.get('total_zones', 0)}
-- 当前总人口: {population_stats.get('total_population', 0)}
-- 当前总容量: {population_stats.get('max_capacity', 0)}
-- 路网扩展次数: {expansion_count}
-- 各类功能区统计: {json.dumps(zone_stats.get('by_type', {}), ensure_ascii=False)}
+            prompt = f"""You are the land-use planning controller for the city simulation.
+Decide how many new zones should be added in this planning round.
 
-决策原则：
-1. 区域数量必须服从人口规模与道路承载能力，不能盲目增加。
-2. 若道路刚扩展且人口在增长，可以一轮增加多个区域。
-3. 若道路不足、人口低、现有区域已经较多，则应保守。
-4. 输出的 count 必须在 1 到 4 之间。
-只输出 JSON：
+Current state:
+- Road nodes: {network_info.get('nodes', 0)}
+- Road edges: {network_info.get('edges', 0)}
+- Existing zones: {zone_stats.get('total_zones', 0)}
+- Total population: {population_stats.get('total_population', 0)}
+- Total capacity: {population_stats.get('max_capacity', 0)}
+- Road expansion count: {expansion_count}
+- Zone statistics: {json.dumps(zone_stats.get('by_type', {}), ensure_ascii=False)}
+
+Decision rules:
+1. The number of new zones must match population scale and road-network carrying capacity.
+2. If the road network has just expanded and population is growing, multiple zones may be added.
+3. If the road network is still weak, population is low, or many zones already exist, remain conservative.
+4. The output count must be between 1 and 4.
+5. Write the reason in English only.
+
+Return JSON only:
 {{
   "count": 1,
-  "reason": "简短说明"
+  "reason": "short explanation"
 }}"""
 
             llm_manager = self._get_llm_manager()
@@ -1121,16 +1408,16 @@ class ZoningAgent(BaseAgent):
 
             response = llm_manager.request_sync_decision(prompt, timeout=10.0)
             if not response:
-                self._archive_llm_decision("zone_batch_count", prompt, adopted=False, status="empty_response", summary="功能区批量规模决策")
+                self._archive_llm_decision("zone_batch_count", prompt, adopted=False, status="empty_response", summary="Zone batch size decision")
                 return None
 
             start = response.find('{')
             end = response.rfind('}')
             if start == -1 or end == -1:
-                self._archive_llm_decision("zone_batch_count", prompt, response=response, adopted=False, status="parse_failed", summary="功能区批量规模决策")
+                self._archive_llm_decision("zone_batch_count", prompt, response=response, adopted=False, status="parse_failed", summary="Zone batch size decision")
                 return None
 
-            result = json.loads(response[start:end+1])
+            result = normalize_decision_text_fields(json.loads(response[start:end+1]))
             self._archive_llm_decision(
                 "zone_batch_count",
                 prompt,
@@ -1138,7 +1425,7 @@ class ZoningAgent(BaseAgent):
                 parsed=result,
                 adopted=True,
                 status="success",
-                summary="功能区批量规模决策",
+                summary="Zone batch size decision",
             )
             return int(result.get('count', 1))
         except Exception as e:
@@ -1147,14 +1434,14 @@ class ZoningAgent(BaseAgent):
                 prompt,
                 adopted=False,
                 status="error",
-                summary="功能区批量规模决策",
+                summary="Zone batch size decision",
                 extra={"error": str(e)},
             )
             print(f"[ZoningAgent] LLM区域数量决策失败: {e}")
             return None
 
-    def _llm_select_location_and_type(self, locations: list[dict]) -> dict[str, Any] | None:
-        """使用 LLM 选择位置和功能类型，并归档原始文本。"""
+    def _llm_select_location_and_type(self, candidates: list[dict]) -> dict[str, Any] | None:
+        """Use the LLM to choose from prepared zoning candidates and archive the result."""
         prompt = ""
         try:
             network_info = self._get_network_info()
@@ -1166,30 +1453,48 @@ class ZoningAgent(BaseAgent):
                 if count > 0:
                     zone_stats[zt.name] = count
 
-            prompt = f"""你是一位城市规划专家。请为城市选择一个新功能区域的位置和类型。
+            prompt_candidates = []
+            for index, candidate in enumerate(candidates[:10]):
+                prompt_candidates.append({
+                    "index": index,
+                    "zone_type": candidate["zone_type"].name,
+                    "source": candidate.get("candidate_source", "unknown"),
+                    "block_fill": candidate.get("is_block_fill", False),
+                    "center": {
+                        "x": round(candidate["center"].x, 1),
+                        "y": round(candidate["center"].y, 1),
+                    },
+                    "width": round(candidate["width"], 1),
+                    "height": round(candidate["height"], 1),
+                    "area": round(candidate["width"] * candidate["height"], 1),
+                    "fill_ratio": round(candidate.get("fill_ratio", 0.0), 3),
+                    "score": round(candidate.get("score", 0.0), 3),
+                    "priority": candidate.get("priority", "medium"),
+                    "need_reason": candidate.get("need_reason", ""),
+                    "advantages": candidate.get("evaluation", {}).get("advantages", [])[:3],
+                })
 
-当前城市状态：
-- 道路节点数: {network_info['nodes']}
-- 当前总人口: {total_pop}
-- 已有区域: {zone_stats}
+            prompt = f"""You are the land-use planning model for a transport simulation platform.
 
-候选位置（沿道路布局）：
-{json.dumps(locations[:10], ensure_ascii=False, indent=2)}
+Current city state:
+- Road nodes: {network_info['nodes']}
+- Total population: {total_pop}
+- Existing zones: {json.dumps(zone_stats, ensure_ascii=False)}
 
-规划原则：
-1. 住宅区优先贴近交通便利的道路，服务人口。
-2. 商业区优先靠近交叉口或主干道。
-3. 学校靠近住宅区。
-4. 医院要求交通便利且覆盖范围广。
-5. 公园靠近住宅区。
-6. 工业区可布置在相对边缘位置。
+Candidate zoning options:
+{json.dumps(prompt_candidates, ensure_ascii=False, indent=2)}
 
-只输出 JSON：
+Decision rules:
+1. Prefer road-enclosed block-fill candidates when they are spatially reasonable.
+2. Do not choose an oversized district just because the original block is large; candidate sizes are already capped.
+3. Match the next zone with current city needs and service balance.
+4. Higher score and higher fill ratio are better, but city balance still matters.
+
+Return JSON only:
 {{
   "selected_index": 0,
-  "zone_type": "RESIDENTIAL",
-  "reason": "选择理由",
-  "confidence": 0.8
+  "reason": "short reason",
+  "confidence": 0.85
 }}"""
 
             llm_manager = self._get_llm_manager()
@@ -1198,10 +1503,10 @@ class ZoningAgent(BaseAgent):
 
             response = llm_manager.request_sync_decision(prompt, timeout=10.0)
             if not response:
-                self._archive_llm_decision("zone_location_type", prompt, adopted=False, status="empty_response", summary="功能区选址与类型决策")
+                self._archive_llm_decision("zone_location_type", prompt, adopted=False, status="empty_response", summary="Zone siting and type decision")
                 return None
 
-            decision = self._parse_llm_location_response(response, locations)
+            decision = self._parse_llm_location_response(response, candidates)
             if decision:
                 parsed = {
                     "zone_type": decision.get("zone_type").name if decision.get("zone_type") else None,
@@ -1213,7 +1518,9 @@ class ZoningAgent(BaseAgent):
                     "height": decision.get("height"),
                     "reason": decision.get("reason"),
                     "confidence": decision.get("confidence"),
-                    "edge_id": decision.get("edge_id"),
+                    "candidate_source": decision.get("candidate_source"),
+                    "is_block_fill": decision.get("is_block_fill"),
+                    "fill_ratio": decision.get("fill_ratio"),
                 }
                 self._archive_llm_decision(
                     "zone_location_type",
@@ -1222,7 +1529,7 @@ class ZoningAgent(BaseAgent):
                     parsed=parsed,
                     adopted=True,
                     status="success",
-                    summary="功能区选址与类型决策",
+                    summary="Zone siting and type decision",
                 )
                 return decision
 
@@ -1232,7 +1539,7 @@ class ZoningAgent(BaseAgent):
                 response=response,
                 adopted=False,
                 status="parse_failed",
-                summary="功能区选址与类型决策",
+                summary="Zone siting and type decision",
             )
         except Exception as e:
             self._archive_llm_decision(
@@ -1240,7 +1547,7 @@ class ZoningAgent(BaseAgent):
                 prompt,
                 adopted=False,
                 status="error",
-                summary="功能区选址与类型决策",
+                summary="Zone siting and type decision",
                 extra={"error": str(e)},
             )
             print(f"[ZoningAgent] LLM选址失败: {e}")

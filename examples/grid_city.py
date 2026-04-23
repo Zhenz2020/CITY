@@ -62,12 +62,15 @@ def create_grid_network(size: int = 3, spacing: float = 200.0) -> RoadNetwork:
 
     # 为交叉口添加信号灯
     for (i, j), node in nodes.items():
-        if node.is_intersection:
-            node.traffic_light = TrafficLight(
-                node=node,
-                cycle_time=60.0,
-                green_duration=25.0,
-                yellow_duration=5.0
+        if network.needs_traffic_light(node):
+            network.register_traffic_light(
+                node,
+                TrafficLight(
+                    node=node,
+                    cycle_time=60.0,
+                    green_duration=25.0,
+                    yellow_duration=5.0
+                )
             )
 
     return network
@@ -94,7 +97,7 @@ def run_grid_simulation():
     # 添加交通管理者
     manager = TrafficManager(environment=env)
     for node in network.nodes.values():
-        if node.is_intersection:
+        if node.traffic_light:
             manager.add_control_node(node)
     env.add_agent(manager)
     print(f"\n添加交通管理者: {manager}")

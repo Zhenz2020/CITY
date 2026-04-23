@@ -9,7 +9,6 @@ interface AgentMemoryViewProps {
 
 export const AgentMemoryView: React.FC<AgentMemoryViewProps> = ({
   agentsWithMemory,
-  agentMemories,
 }) => {
   return (
     <Card title={<><DatabaseOutlined /> Agent Memory</>}>
@@ -23,18 +22,18 @@ export const AgentMemoryView: React.FC<AgentMemoryViewProps> = ({
                   <Tag color="purple">{agent.type || agent.agent_type || 'unknown'}</Tag>
                   <span>{agent.name || agent.id || agent.agent_id}</span>
                   <Tag color={agent.memory_count > 0 ? 'blue' : 'default'}>
-                    {agent.memory_count ?? 0} 条记忆
+                    {agent.memory_count ?? 0} memories
                   </Tag>
                 </Space>
                 <Typography.Text type="secondary">
-                  {agent.memory_summary || '已启用，暂无记忆条目'}
+                  {agent.memory_summary || 'Enabled, but no memory entries yet'}
                 </Typography.Text>
               </Space>
             </List.Item>
           )}
         />
       ) : (
-        <Empty description="没有启用记忆的智能体" />
+        <Empty description="No agents with memory enabled" />
       )}
     </Card>
   );

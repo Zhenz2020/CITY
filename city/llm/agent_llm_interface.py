@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from city.llm.llm_client import LLMClient, LLMConfig
 from city.llm.llm_pool import get_llm_pool
+from city.llm.text_normalizer import normalize_decision_text_fields
 
 if TYPE_CHECKING:
     from city.agents.base import BaseAgent
@@ -50,64 +52,54 @@ class AgentLLMInterface:
         self.decision_history: list[dict] = []  # 决策历史
 
     def _get_system_prompt(self) -> str:
-        """根据智能体类型获取系统提示词 - 增强版。"""
+        """Return an English-only system prompt for the current agent type."""
         agent_type = self.agent.agent_type.name
 
-        base_prompt = """你是一个专业的交通仿真决策助手。你的任务是基于当前交通状况，做出安全、高效的决策。
+        base_prompt = """You are a professional traffic simulation decision assistant.
+Make safe, efficient, and realistic decisions based on the current traffic state.
 
-重要规则：
-1. 必须考虑安全距离，避免碰撞
-2. 遵守交通信号灯规则
-3. 遇到死锁时要有恢复策略
-4. 决策要考虑到周围所有车辆
+Important rules:
+1. Always prioritize safety and collision avoidance.
+2. Follow traffic signal and right-of-way rules.
+3. If the scene is deadlocked, prefer recovery actions that unblock traffic safely.
+4. Return valid JSON only.
+5. Write every explanation in English only.
 
-你必须以JSON格式回复，格式如下：
+Use this JSON structure:
 {
-    "action": "动作类型",
-    "reason": "决策理由（简要）",
-    "reasoning_chain": ["推理步骤1", "推理步骤2", ...],
-    "confidence": 0.95,
-    "parameters": {
-        "target_speed": 目标速度,
-        "safe_distance": 安全距离
-    }
+  "action": "action_name",
+  "reason": "short English reason",
+  "reasoning_chain": ["step 1", "step 2"],
+  "confidence": 0.95,
+  "parameters": {
+    "target_speed": 0.0,
+    "safe_distance": 0.0
+  }
 }"""
 
         vehicle_prompt = base_prompt + """
 
-你是车辆驾驶专家。可用动作：
-- accelerate: 加速（前方畅通，速度低于限速）
-- decelerate: 减速（前方有车辆/障碍物，或接近红灯）
-- maintain: 保持当前速度（稳定巡航）
-- stop: 停车（红灯或完全堵住）
-- proceed: 继续/恢复行驶（从停止状态起步）
-- emergency_brake: 紧急制动（即将碰撞）
-- change_lane_left/right: 变道（死锁恢复或超车）
-
-决策逻辑：
-1. 首先评估碰撞风险（time_to_collision < 3秒时必须减速）
-2. 检查交通信号灯（红灯必须停车，黄灯视情况）
-3. 评估前方车辆距离和速度
-4. 如果是死锁状态，尝试变道或缓慢前进
-"""
+You are the driving policy for a vehicle agent.
+Available actions: accelerate, decelerate, maintain, stop, proceed, emergency_brake, change_lane_left, change_lane_right.
+Prefer smooth control unless safety requires urgent intervention."""
 
         pedestrian_prompt = base_prompt + """
 
-你是行人安全专家。可用动作：walk, wait, cross
-决策原则：安全第一，只在安全时过马路。
-"""
+You are the safety policy for a pedestrian agent.
+Available actions: walk, wait, cross.
+Only cross when the situation is clearly safe."""
 
         manager_prompt = base_prompt + """
 
-你是交通管理者。可用动作：adjust_signal, publish_warning, no_action
-目标：优化整体交通流量，减少拥堵。
-"""
+You are the control policy for a traffic management agent.
+Available actions: adjust_signal, publish_warning, no_action.
+Optimize flow while maintaining safety and fairness across approaches."""
 
         prompts = {
             'VEHICLE': vehicle_prompt,
             'PEDESTRIAN': pedestrian_prompt,
             'TRAFFIC_MANAGER': manager_prompt,
-            'TRAFFIC_PLANNER': base_prompt + "\n\n你是交通规划专家。提供长期规划建议。"
+            'TRAFFIC_PLANNER': base_prompt + "\n\nYou are a transport planning expert. Provide long-term planning recommendations in English only."
         }
 
         return prompts.get(agent_type, base_prompt)
@@ -137,6 +129,7 @@ class AgentLLMInterface:
             )
 
             if isinstance(response, dict):
+                response = self._finalize_decision(response)
                 # 记录决策历史
                 self.decision_history.append({
                     'timestamp': getattr(self.agent.environment, 'current_time', 0),
@@ -164,17 +157,21 @@ class AgentLLMInterface:
         elif agent_type == 'TRAFFIC_MANAGER':
             return self._build_manager_prompt(perception)
         else:
-            return f"当前状态: {json.dumps(perception, ensure_ascii=False, indent=2)}"
+            return (
+                "Current state:\n"
+                f"{json.dumps(perception, ensure_ascii=False, indent=2)}\n\n"
+                "Return valid JSON only and write every explanation in English."
+            )
 
     def _build_vehicle_enhanced_prompt(self, perception: dict[str, Any] | None) -> str:
-        """构建车辆增强版决策提示。"""
+        """Build an English driving prompt with structured context."""
         vehicle = self.agent
         if not perception:
-            return '{"action": "maintain", "reason": "无感知数据", "confidence": 0.5}'
+            return '{"action": "maintain", "reason": "No perception data is available.", "confidence": 0.5}'
+
         self_info = perception.get('self', {})
         route_info = perception.get('route', {})
         front_v = perception.get('front_vehicle')
-        rear_v = perception.get('rear_vehicle')
         left_v = perception.get('left_lane_vehicle')
         right_v = perception.get('right_lane_vehicle')
         traffic_light = perception.get('traffic_light')
@@ -182,161 +179,139 @@ class AgentLLMInterface:
         surroundings = perception.get('surroundings', [])
         is_deadlocked = perception.get('is_deadlocked', False)
 
-        prompt_parts = [f"""=== 车辆驾驶决策请求 ===
+        prompt_parts = [f"""=== Vehicle Driving Decision Request ===
 
-【自身状态】
+[Self State]
 - ID: {vehicle.agent_id}
-- 类型: {vehicle.vehicle_type.name}
-- 当前速度: {self_info.get('velocity', 0):.2f} m/s (最大: {self_info.get('max_speed', 0):.2f})
-- 当前状态: {self_info.get('state', 'UNKNOWN')}
-- 位置: ({self_info.get('position', [0, 0])[0]:.1f}, {self_info.get('position', [0, 0])[1]:.1f})
-- 当前路段进度: {route_info.get('progress_ratio', 0)*100:.1f}%
-- 剩余节点: {route_info.get('remaining_nodes', 0)}
+- Type: {vehicle.vehicle_type.name}
+- Current speed: {self_info.get('velocity', 0):.2f} m/s (max: {self_info.get('max_speed', 0):.2f})
+- Current state: {self_info.get('state', 'UNKNOWN')}
+- Position: ({self_info.get('position', [0, 0])[0]:.1f}, {self_info.get('position', [0, 0])[1]:.1f})
+- Route progress: {route_info.get('progress_ratio', 0) * 100:.1f}%
+- Remaining nodes: {route_info.get('remaining_nodes', 0)}
 """]
 
-        # 添加前车信息
         if front_v:
             prompt_parts.append(f"""
-【前方车辆 - 关键信息】
-- 距离前车: {front_v['distance']:.2f} 米
-- 前车速度: {front_v['velocity']:.2f} m/s
-- 相对速度: {front_v['relative_velocity']:.2f} m/s
-- 碰撞时间(TTC): {front_v['time_to_collision']:.2f} 秒
-- 前车是否停止: {'是' if front_v['is_stopped'] else '否'}
+[Lead Vehicle]
+- Distance: {front_v['distance']:.2f} m
+- Speed: {front_v['velocity']:.2f} m/s
+- Relative speed: {front_v['relative_velocity']:.2f} m/s
+- Time to collision: {front_v['time_to_collision']:.2f} s
+- Lead vehicle stopped: {front_v['is_stopped']}
 """)
-            # 碰撞风险评估
             if front_v['time_to_collision'] < 3:
-                prompt_parts.append("⚠️ 警告：碰撞风险高！需要立即减速或停车！")
+                prompt_parts.append("High collision risk detected. Immediate deceleration or stopping should be considered.")
         else:
-            prompt_parts.append("\n【前方车辆】前方无车辆，道路畅通")
+            prompt_parts.append("[Lead Vehicle] No vehicle is directly ahead.")
 
-        # 添加交通信号灯信息
         if traffic_light:
             prompt_parts.append(f"""
-【交通信号灯】
-- 信号灯状态: {traffic_light['state']}
-- 距离路口: {traffic_light['distance']:.2f} 米
-- 预计到达时间: {traffic_light['time_to_reach']:.2f} 秒
+[Traffic Light]
+- State: {traffic_light['state']}
+- Distance to intersection: {traffic_light['distance']:.2f} m
+- Estimated time to reach: {traffic_light['time_to_reach']:.2f} s
 """)
-            if traffic_light['distance'] < 30:
-                if 'RED' in traffic_light['state']:
-                    prompt_parts.append("🔴 红灯即将到达，需要准备停车")
-                elif 'YELLOW' in traffic_light['state']:
-                    prompt_parts.append("🟡 黄灯，根据距离决定是否通过")
         else:
-            prompt_parts.append("\n【交通信号灯】前方无信号灯")
+            prompt_parts.append("[Traffic Light] No relevant signal is ahead.")
 
-        # 添加路口排队信息
         if intersection and intersection['length'] > 0:
             prompt_parts.append(f"""
-【路口排队情况】
-- 排队车辆数: {intersection['length']}
-- 是否被堵住: {'是' if intersection['is_blocked'] else '否'}
+[Intersection Queue]
+- Queue length: {intersection['length']}
+- Blocked: {intersection['is_blocked']}
 """)
 
-        # 添加相邻车道信息
         lane_info = []
-        if left_v:
-            lane_info.append(f"左车道: {left_v['distance']:.1f}米{'前' if left_v['is_front'] else '后'}有车辆")
-        else:
-            lane_info.append("左车道: 空闲")
-        if right_v:
-            lane_info.append(f"右车道: {right_v['distance']:.1f}米{'前' if right_v['is_front'] else '后'}有车辆")
-        else:
-            lane_info.append("右车道: 空闲")
-        prompt_parts.append(f"\n【相邻车道】\n" + "\n".join(f"  - {info}" for info in lane_info))
+        lane_info.append(
+            f"Left lane: {'occupied' if left_v else 'clear'}"
+            + (f", vehicle {left_v['distance']:.1f} m {'ahead' if left_v['is_front'] else 'behind'}" if left_v else "")
+        )
+        lane_info.append(
+            f"Right lane: {'occupied' if right_v else 'clear'}"
+            + (f", vehicle {right_v['distance']:.1f} m {'ahead' if right_v['is_front'] else 'behind'}" if right_v else "")
+        )
+        prompt_parts.append("[Adjacent Lanes]\n" + "\n".join(f"- {info}" for info in lane_info))
 
-        # 添加周边环境概要
         if surroundings:
-            prompt_parts.append(f"\n【周边环境】周边{len(surroundings)}辆车在100米范围内")
+            prompt_parts.append(f"[Nearby Environment] {len(surroundings)} nearby vehicles are within 100 m.")
 
-        # 添加死锁提示
         if is_deadlocked:
             prompt_parts.append("""
-
-🚨 【死锁警告】车辆处于死锁状态！
-请优先考虑：
-1. 检查是否可以变道
-2. 如果前车停止，等待并尝试变道
-3. 如果是第一辆车，缓慢前进
+[Deadlock Warning]
+The vehicle appears to be deadlocked.
+Prefer safe recovery actions such as lane changes or cautious forward progress.
 """)
 
-        # 添加决策历史（如果存在）
         if self.decision_history:
             last_decision = self.decision_history[-1]['decision']
             prompt_parts.append(f"""
-【上次决策】
-- 动作: {last_decision.get('action', 'unknown')}
-- 理由: {last_decision.get('reason', 'N/A')}
+[Previous Decision]
+- Action: {last_decision.get('action', 'unknown')}
+- Reason: {last_decision.get('reason', 'N/A')}
 """)
 
         prompt_parts.append("""
+[Decision Requirements]
+1. If time to collision is below 3 seconds, prioritize braking or stopping.
+2. Stop for red lights. Treat yellow lights based on distance and safety.
+3. If the vehicle is deadlocked, consider lane changes or cautious recovery.
+4. Keep control smooth and avoid unnecessary oscillation.
 
-=== 决策要求 ===
-请基于以上信息，提供驾驶决策。
-特别注意事项：
-1. 如果 collision time < 3秒，必须减速或停车
-2. 红灯时必须停车，黄灯视情况决定
-3. 如果被堵住(is_deadlocked=true)，尝试变道
-4. 决策要平滑，避免频繁加减速
-
-请以JSON格式回复。""")
+Return valid JSON only, and write the reason in English.
+""")
 
         return "\n".join(prompt_parts)
 
     def _build_pedestrian_prompt(self, perception: dict[str, Any]) -> str:
-        """构建行人决策提示。"""
+        """Build an English pedestrian decision prompt."""
         pedestrian = self.agent
-        prompt = f"""=== 行人决策请求 ===
+        return f"""=== Pedestrian Decision Request ===
 
-【自身状态】
+[Self State]
 - ID: {pedestrian.agent_id}
-- 当前速度: {pedestrian.velocity:.2f} m/s
-- 位置: ({pedestrian.position.x:.2f}, {pedestrian.position.y:.2f})
+- Current speed: {pedestrian.velocity:.2f} m/s
+- Position: ({pedestrian.position.x:.2f}, {pedestrian.position.y:.2f})
 
-感知信息：
+[Perception]
 {json.dumps(perception, ensure_ascii=False, indent=2)}
 
-请提供行动决策。"""
-        return prompt
+Return valid JSON only and explain the decision in English."""
 
     def _build_manager_prompt(self, perception: dict[str, Any]) -> str:
-        """构建交通管理者/红绿灯决策提示。"""
+        """Build an English traffic management or signal control prompt."""
         manager = self.agent
         
-        # 检查是 TrafficManager 还是 TrafficLightAgent
         if hasattr(manager, 'control_area'):
-            # TrafficManager
-            prompt = f"""=== 交通管理决策请求 ===
+            prompt = f"""=== Traffic Management Decision Request ===
 
-【管理状态】
-- 管理区域: {len(manager.control_area)} 个节点
-- 活跃事件: {len(manager.incidents)} 个
+[Management State]
+- Controlled nodes: {len(manager.control_area)}
+- Active incidents: {len(manager.incidents)}
 
-感知信息：
+[Perception]
 {json.dumps(perception, ensure_ascii=False, indent=2)}
 
-请提供管理决策。"""
+Return valid JSON only and explain the decision in English."""
         elif hasattr(manager, 'control_node'):
-            # TrafficLightAgent
-            prompt = f"""=== 红绿灯控制决策请求 ===
+            prompt = f"""=== Signal Control Decision Request ===
 
-【路口状态】
-- 控制节点: {manager.control_node.name}
-- 当前相位: {perception.get('current_phase', 'UNKNOWN')}
+[Intersection State]
+- Controlled node: {manager.control_node.name}
+- Current phase: {perception.get('current_phase', 'UNKNOWN')}
 
-感知信息：
+[Perception]
 {json.dumps(perception, ensure_ascii=False, indent=2)}
 
-请提供红绿灯配时决策（maintain/switch_phase/extend_current）。"""
+Choose one of: maintain, switch_phase, extend_current.
+Return valid JSON only and explain the decision in English."""
         else:
-            # 其他类型
-            prompt = f"""=== 交通管理决策请求 ===
+            prompt = f"""=== Traffic Control Decision Request ===
 
-感知信息：
+[Perception]
 {json.dumps(perception, ensure_ascii=False, indent=2)}
 
-请提供管理决策。"""
+Return valid JSON only and explain the decision in English."""
         
         return prompt
 
@@ -351,39 +326,132 @@ class AgentLLMInterface:
             'is_deadlocked': perception.get('is_deadlocked'),
         }
 
+    def _extract_json_candidate(self, response: str) -> str:
+        """Extract the most likely JSON fragment from a raw LLM response."""
+        text = (response or "").strip()
+
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            if end != -1:
+                text = text[start:end].strip()
+        elif "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end != -1:
+                text = text[start:end].strip()
+
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            text = text[first_brace:last_brace + 1]
+
+        return text.strip()
+
+    def _clean_json_candidate(self, json_str: str) -> str:
+        """Repair common LLM JSON corruption patterns before parsing."""
+        text = (json_str or "").strip()
+        text = text.replace("\r", "")
+        text = text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+        text = text.replace("，", ",").replace("：", ":")
+
+        text = re.sub(r"(?:_?isis)+", "", text, flags=re.IGNORECASE)
+
+        while '""' in text:
+            text = text.replace('""', '"')
+
+        text = text.replace('"is_reason"', '"reason"')
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+        return text.strip()
+
+    def _normalize_action_name(self, action: Any) -> str:
+        """Normalize noisy action strings returned by the LLM."""
+        if not isinstance(action, str):
+            return "maintain"
+
+        cleaned = re.sub(r"(?:_?isis)+", "", action, flags=re.IGNORECASE)
+        cleaned = cleaned.strip().strip('"').strip("'").lower()
+        cleaned = re.sub(r"[^a-z_]+", "_", cleaned)
+        cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+
+        action_aliases = {
+            "adjust_signal": "adjust_signal",
+            "adjust_signals": "adjust_signal",
+            "switch_phase": "switch_phase",
+            "extend_current": "extend_current",
+            "maintain": "maintain",
+            "maintain_current_light": "maintain",
+            "no_action": "no_action",
+            "publish_warning": "publish_warning",
+            "accelerate": "accelerate",
+            "decelerate": "decelerate",
+            "stop": "stop",
+            "proceed": "proceed",
+            "emergency_brake": "emergency_brake",
+            "change_lane_left": "change_lane_left",
+            "change_lane_right": "change_lane_right",
+            "walk": "walk",
+            "wait": "wait",
+            "cross": "cross",
+        }
+
+        if cleaned in action_aliases:
+            return action_aliases[cleaned]
+        if cleaned.startswith("adjust_signal"):
+            return "adjust_signal"
+        if cleaned.startswith("maintain"):
+            return "maintain"
+        return cleaned or "maintain"
+
+    def _salvage_decision_fields(self, response: str) -> dict[str, Any]:
+        """Best-effort extraction when valid JSON cannot be recovered."""
+        text = self._clean_json_candidate(self._extract_json_candidate(response))
+
+        action_match = re.search(r'"?action"?\s*:\s*"?(?P<value>[A-Za-z_]+)', text, flags=re.IGNORECASE)
+        reason_match = re.search(r'"?(?:reason|is_reason)"?\s*:\s*"?(?P<value>[^"\n,}{]+)', text, flags=re.IGNORECASE)
+        confidence_match = re.search(r'"?confidence"?\s*:\s*(?P<value>\d+(?:\.\d+)?)', text, flags=re.IGNORECASE)
+
+        return {
+            "action": self._normalize_action_name(action_match.group("value") if action_match else "maintain"),
+            "reason": (reason_match.group("value").strip() if reason_match else "Malformed LLM response, fallback decision"),
+            "confidence": float(confidence_match.group("value")) if confidence_match else 0.4,
+        }
+
+    def _finalize_decision(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Ensure required decision fields are present and normalized."""
+        normalized = normalize_decision_text_fields(dict(result or {}))
+        normalized["action"] = self._normalize_action_name(normalized.get("action"))
+        normalized["reason"] = normalize_reason_text(normalized.get("reason"), action=normalized["action"], fallback="Use LLM suggestion.")
+        normalized["confidence"] = float(normalized.get("confidence", 0.8) or 0.8)
+        return normalized
+
     def _parse_response(self, response: str) -> dict[str, Any]:
         """解析LLM响应 - 增强版。"""
-        try:
-            # 尝试多种方式提取JSON
-            json_str = None
-            
-            if "```json" in response:
-                start = response.find("```json") + 7
-                end = response.find("```", start)
-                json_str = response[start:end].strip()
-            elif "```" in response:
-                start = response.find("```") + 3
-                end = response.find("```", start)
-                json_str = response[start:end].strip()
-            else:
-                # 尝试直接解析整个响应
-                json_str = response.strip()
+        json_str = self._extract_json_candidate(response)
+        candidates = [json_str]
 
-            if json_str:
-                result = json.loads(json_str)
-                # 确保必要字段存在
-                if 'action' not in result:
-                    result['action'] = 'maintain'
-                if 'reason' not in result:
-                    result['reason'] = '使用LLM建议'
-                if 'confidence' not in result:
-                    result['confidence'] = 0.8
-                return result
-                
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"JSON解析失败: {e}, 原始响应: {response[:200]}")
-            
-        return {"action": "maintain", "reason": "解析失败，使用默认策略", "confidence": 0.5}
+        cleaned = self._clean_json_candidate(json_str)
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+
+        last_error: Exception | None = None
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                result = json.loads(candidate)
+                if isinstance(result, dict):
+                    return self._finalize_decision(result)
+            except (json.JSONDecodeError, ValueError) as e:
+                last_error = e
+
+        salvage = self._salvage_decision_fields(response)
+        if salvage:
+            print(f"JSON解析失败: {last_error}, 已启用容错提取, 原始响应: {response[:200]}")
+            return self._finalize_decision(salvage)
+
+        print(f"JSON解析失败: {last_error}, 原始响应: {response[:200]}")
+        return {"action": "maintain", "reason": "Malformed LLM response, use safe fallback", "confidence": 0.5}
 
     def _fallback_decision(self, perception: dict[str, Any] | None) -> dict[str, Any]:
         """当LLM不可用时使用增强版默认决策。"""
@@ -403,7 +471,7 @@ class AgentLLMInterface:
             if front_v and front_v.get('time_to_collision', float('inf')) < 2:
                 return {
                     'action': 'emergency_brake',
-                    'reason': '碰撞风险高，紧急制动',
+                    'reason': 'Collision risk is high, apply emergency braking.',
                     'confidence': 0.95
                 }
             
@@ -412,13 +480,13 @@ class AgentLLMInterface:
                 if traffic_light.get('distance', 100) < 20:
                     return {
                         'action': 'stop',
-                        'reason': '红灯，需要停车',
+                        'reason': 'Red light ahead, stop the vehicle.',
                         'confidence': 0.9
                     }
                 else:
                     return {
                         'action': 'decelerate',
-                        'reason': '前方红灯，准备停车',
+                        'reason': 'Red light ahead, decelerate and prepare to stop.',
                         'confidence': 0.85
                     }
             
@@ -426,7 +494,7 @@ class AgentLLMInterface:
             if front_v and front_v.get('distance', 100) < 15:
                 return {
                     'action': 'decelerate',
-                    'reason': f"前车距离{front_v['distance']:.1f}米，保持安全距离",
+                    'reason': f"Lead vehicle is {front_v['distance']:.1f} m ahead, maintain a safe gap.",
                     'confidence': 0.8
                 }
             
@@ -434,7 +502,7 @@ class AgentLLMInterface:
             if is_deadlocked:
                 return {
                     'action': 'change_lane_left',
-                    'reason': '死锁恢复：尝试变道',
+                    'reason': 'Deadlock recovery: attempt a lane change.',
                     'confidence': 0.6
                 }
             
@@ -445,40 +513,40 @@ class AgentLLMInterface:
             if velocity < max_speed * 0.8:
                 return {
                     'action': 'accelerate',
-                    'reason': '道路畅通，加速至目标速度',
+                    'reason': 'The road ahead is clear, accelerate toward the target speed.',
                     'confidence': 0.75
                 }
             
             return {
                 'action': 'maintain',
-                'reason': '巡航中',
+                'reason': 'Maintain the current cruising state.',
                 'confidence': 0.7
             }
 
         fallbacks = {
-            'PEDESTRIAN': {'action': 'wait', 'reason': '使用默认策略', 'confidence': 0.5},
-            'TRAFFIC_MANAGER': {'action': 'no_action', 'reason': '使用默认策略', 'confidence': 0.5},
-            'TRAFFIC_PLANNER': {'action': 'no_proposal', 'reason': '使用默认策略', 'confidence': 0.5}
+            'PEDESTRIAN': {'action': 'wait', 'reason': 'Use the default pedestrian fallback.', 'confidence': 0.5},
+            'TRAFFIC_MANAGER': {'action': 'no_action', 'reason': 'Use the default traffic-management fallback.', 'confidence': 0.5},
+            'TRAFFIC_PLANNER': {'action': 'no_proposal', 'reason': 'Use the default planning fallback.', 'confidence': 0.5}
         }
 
-        return fallbacks.get(agent_type, {'action': 'unknown', 'reason': '未知类型', 'confidence': 0.5})
+        return fallbacks.get(agent_type, {'action': 'unknown', 'reason': 'Unknown agent type, use a safe fallback.', 'confidence': 0.5})
 
     def get_decision_explanation(self) -> str:
         """获取最后一次决策的解释（用于前端展示）。"""
         if not self.decision_history:
-            return "暂无决策历史"
+            return "No decision history is available."
         
         last = self.decision_history[-1]
         decision = last['decision']
         
         explanation = f"""
-决策时间: {last['timestamp']:.1f}s
-执行动作: {decision.get('action', 'unknown')}
-决策理由: {decision.get('reason', 'N/A')}
-置信度: {decision.get('confidence', 0):.0%}
+Decision time: {last['timestamp']:.1f}s
+Action: {decision.get('action', 'unknown')}
+Reason: {decision.get('reason', 'N/A')}
+Confidence: {decision.get('confidence', 0):.0%}
 """
         if 'reasoning_chain' in decision:
-            explanation += "\n推理过程:\n"
+            explanation += "\nReasoning chain:\n"
             for i, step in enumerate(decision['reasoning_chain'], 1):
                 explanation += f"  {i}. {step}\n"
         

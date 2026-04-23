@@ -42,36 +42,36 @@ export const PlaybackView: React.FC<PlaybackViewProps> = ({
         />
       </div>
       <div style={{ flex: 1 }}>
-        <Card title={<><HistoryOutlined /> 仿真控制</>} size="small">
+        <Card title={<><HistoryOutlined /> Playback Control</>} size="small">
           <Space direction="vertical" style={{ width: '100%' }}>
             <Space>
               <Button
-                type={isRunning ? "default" : "primary"}
+                type={isRunning ? 'default' : 'primary'}
                 icon={<PlayCircleOutlined />}
                 onClick={onStart}
                 disabled={isRunning}
               >
-                开始
+                Start
               </Button>
               <Button
-                type={isRunning ? "primary" : "default"}
+                type={isRunning ? 'primary' : 'default'}
                 icon={<PauseCircleOutlined />}
                 onClick={onPause}
                 disabled={!isRunning}
               >
-                暂停
+                Pause
               </Button>
-              <Button onClick={onReset}>重置</Button>
+              <Button onClick={onReset}>Reset</Button>
             </Space>
             <div>
-              <span>当前时间: </span>
+              <span>Current Time: </span>
               <Tag color="blue" style={{ fontSize: 16 }}>
                 {currentTime.toFixed(1)}s
               </Tag>
             </div>
             <div>
-              <span>车辆数: </span>
-              <Tag color="blue">{vehicles.length} 辆</Tag>
+              <span>Vehicles: </span>
+              <Tag color="blue">{vehicles.length}</Tag>
             </div>
           </Space>
         </Card>

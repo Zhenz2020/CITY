@@ -48,9 +48,11 @@ def create_intersection():
     network.create_edge(nodes['center'], nodes['west_out'], num_lanes=2)
 
     # 信号灯
-    nodes['center'].traffic_light = TrafficLight(
-        nodes['center'], cycle_time=60, green_duration=30, yellow_duration=5
-    )
+    if network.needs_traffic_light(nodes['center']):
+        network.register_traffic_light(
+            nodes['center'],
+            TrafficLight(nodes['center'], cycle_time=60, green_duration=30, yellow_duration=5)
+        )
 
     return network, nodes
 
@@ -83,7 +85,8 @@ def main():
 
     # 添加交通管理者
     manager = TrafficManager(environment=env)
-    manager.add_control_node(nodes['center'])
+    if nodes['center'].traffic_light:
+        manager.add_control_node(nodes['center'])
     env.add_agent(manager)
 
     # 生成初始车辆

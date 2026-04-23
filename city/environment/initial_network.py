@@ -268,19 +268,18 @@ def _add_traffic_lights_to_network(
     
     for node in network.nodes.values():
         # 连接数 >= 3 的节点需要红绿灯
-        total_connections = len(node.incoming_edges) + len(node.outgoing_edges)
-        
-        if total_connections >= 3 and not node.traffic_light:
+        if network.needs_traffic_light(node) and not node.traffic_light:
             node.is_intersection = True
-            node.traffic_light = TrafficLight(
-                node, cycle_time=60, green_duration=25, yellow_duration=5
+            network.register_traffic_light(
+                node,
+                TrafficLight(node, cycle_time=60, green_duration=25, yellow_duration=5),
             )
             
             tl_agent = TrafficLightAgent(
                 control_node=node,
                 environment=env,
                 use_llm=True,
-                name=f"tl_{node.name}"
+                name=f"traffic_light_{node.name}"
             )
             tl_agent.activate()
             env.add_agent(tl_agent)

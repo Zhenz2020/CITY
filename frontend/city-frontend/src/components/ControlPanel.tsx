@@ -22,36 +22,36 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onSpawnVehicle,
 }) => {
   return (
-    <Card title="仿真控制" size="small">
+    <Card title="Simulation Control" size="small">
       <Space direction="vertical" style={{ width: '100%' }}>
         <Space>
           <Button
-            type={isRunning ? "default" : "primary"}
+            type={isRunning ? 'default' : 'primary'}
             icon={<PlayCircleOutlined />}
             onClick={onStart}
             disabled={isRunning || !isConnected}
           >
-            开始
+            Start
           </Button>
           <Button
-            type={isRunning ? "primary" : "default"}
+            type={isRunning ? 'primary' : 'default'}
             icon={<PauseCircleOutlined />}
             onClick={onPause}
             disabled={!isRunning}
           >
-            暂停
+            Pause
           </Button>
           <Button icon={<ReloadOutlined />} onClick={onReset}>
-            重置
+            Reset
           </Button>
         </Space>
         <Button icon={<CarOutlined />} onClick={onSpawnVehicle} block>
-          生成车辆
+          Spawn Vehicle
         </Button>
         {statistics && (
           <>
-            <Statistic title="活跃车辆" value={statistics.active_vehicles || 0} />
-            <Statistic title="已完成车辆" value={statistics.total_vehicles_completed || 0} />
+            <Statistic title="Active Vehicles" value={statistics.active_vehicles || 0} />
+            <Statistic title="Completed Vehicles" value={statistics.total_vehicles_completed || 0} />
           </>
         )}
       </Space>

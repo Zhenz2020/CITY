@@ -30,7 +30,8 @@ def create_test_environment():
     
     network.create_edge(n1, n2, num_lanes=2)
     network.create_edge(n2, n3, num_lanes=2)
-    n2.traffic_light = TrafficLight(n2, cycle_time=60, green_duration=30)
+    if network.needs_traffic_light(n2):
+        network.register_traffic_light(n2, TrafficLight(n2, cycle_time=60, green_duration=30))
     
     env = SimulationEnvironment(network)
     return env, [n1, n2, n3]
@@ -241,7 +242,8 @@ def demo_siliconflow_manager():
     # 创建环境和管理者
     env, nodes = create_test_environment()
     manager = TrafficManager(environment=env, use_llm=True)
-    manager.add_control_node(nodes[1])
+    if nodes[1].traffic_light:
+        manager.add_control_node(nodes[1])
     
     print(f"\n交通管理者信息:")
     print(f"  ID: {manager.agent_id}")

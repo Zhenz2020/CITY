@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from city.agents.base import AgentType, BaseAgent
 from city.agents.vehicle import Vehicle, VehicleType
+from city.llm.text_normalizer import normalize_decision_text_fields
 from city.utils.vector import Vector2D
 
 if TYPE_CHECKING:
@@ -291,43 +292,43 @@ class PopulationCityPlanner(BaseAgent):
         aspect_ratio: float, preferred_direction: str
     ) -> dict[str, Any] | None:
         """使用LLM规划城市扩张。"""
-        prompt = f"""你是一位城市规划专家。基于当前城市网络状态，决定新区域的位置和连接方式。
+        prompt = f"""You are an urban network expansion planner.
+Decide where to place the next road-network node and how it should connect.
 
-## 当前网络状态
-- 节点数 {len(nodes_info)}
-- 网络范围: X[{min_x:.0f}, {max_x:.0f}], Y[{min_y:.0f}, {max_y:.0f}]
-- 中心点 ({center_x:.0f}, {center_y:.0f})
-- 宽高比 {aspect_ratio:.2f}
-- 人口密度: {self.get_population_density()*100:.0f}%
+Current network state:
+- Node count: {len(nodes_info)}
+- Bounds: X[{min_x:.0f}, {max_x:.0f}], Y[{min_y:.0f}, {max_y:.0f}]
+- Center: ({center_x:.0f}, {center_y:.0f})
+- Aspect ratio: {aspect_ratio:.2f}
+- Population density: {self.get_population_density() * 100:.0f}%
 
-## 形状分析
-当前城市网络形状: {preferred_direction}
-- 'vertical': 网络太宽，应优先向上/下扩展
-- 'horizontal': 网络太高，应优先向左/右扩展 
-- 'balanced': 网络均衡，可向任何方向扩展
+Shape analysis:
+- Current layout bias: {preferred_direction}
+- vertical: the network is too wide, prefer north/south expansion
+- horizontal: the network is too tall, prefer east/west expansion
+- balanced: any direction is acceptable
 
-## 现有节点信息
+Existing nodes:
 {json.dumps(nodes_info[:10], ensure_ascii=False, indent=2)}
 
-## 规划约束
-1. **避免长条化**: 根据形状分析，优先在较少重叠的方向扩展
-2. **网格布局**: 新节点位置应与现有点保持接近网格状布局
-3. **可达性**: 新节点必须与至少2个现有点相连接，确保路网连通
-4. **优先连接**: 优先连接负载较低的节点，平衡网络
-5. **距离控制**: 新节点应与最远的现有点距离250-350米
+Planning constraints:
+1. Avoid long-strip growth and improve overall shape balance.
+2. Keep the new node close to a grid-like pattern when possible.
+3. Connect the new node to at least 2 existing nodes when feasible.
+4. Prefer lower-load connections to balance the network.
+5. Keep the expansion distance roughly within 250-350 meters from the far side.
+6. Write all reasons in English only.
 
-## 输出格式
-请返回JSON格式决策:
+Return JSON only:
 {{
-    "new_node_x": 坐标x（整数）,
-    "new_node_y": 坐标y（整数）,
-    "connect_to": ["节点ID1", "节点ID2"],
-    "expansion_direction": "扩展方向描述",
-    "connect_reason": "选择这些连接的理由",",
-    "shape_consideration": "如何改善网络形状",
-    "reason": "整体决策理由"
-}}
-"""
+  "new_node_x": 0,
+  "new_node_y": 0,
+  "connect_to": ["node_id_1", "node_id_2"],
+  "expansion_direction": "direction summary",
+  "connect_reason": "why these nodes were chosen",
+  "shape_consideration": "how this improves the network shape",
+  "reason": "overall decision summary"
+}}"""
         try:
             llm_manager = self._get_llm_manager()
             if llm_manager:
@@ -572,7 +573,7 @@ class PopulationCityPlanner(BaseAgent):
             if start == -1 or end == -1:
                 return None
             
-            plan = json.loads(response[start:end+1])
+            plan = normalize_decision_text_fields(json.loads(response[start:end+1]))
             
             # 验证节点ID
             connect_to = plan.get('connect_to', [])
@@ -589,10 +590,10 @@ class PopulationCityPlanner(BaseAgent):
                     'y': plan.get('new_node_y', center_y)
                 },
                 'connect_to': valid_connections[:3],
-                'expansion_direction': plan.get('expansion_direction', '未知'),
+                'expansion_direction': plan.get('expansion_direction', 'unknown'),
                 'connect_reason': plan.get('connect_reason', ''),
                 'shape_consideration': plan.get('shape_consideration', ''),
-                'reason': plan.get('reason', 'LLM规划'),
+                'reason': plan.get('reason', 'LLM network expansion decision.'),
                 'is_llm': True
             }
             
@@ -935,45 +936,56 @@ class PopulationCityPlanner(BaseAgent):
         # 判断浠庡摢涓式否戠粫琛?
         # 比较涓ょ络曡新方鐨勭粫琛岃窛绂?
         
-        # 新方1：氫粠涓婃式/涓嬫式络曡：堟按骞决式否戣繛鎺ワ級
-        if abs(x2 - x1) > abs(y2 - y1):
-            # 姘村钩连接：优粠涓婃式我栦笅新界粫琛?
-            mid_x = (x1 + x2) / 2
-            
-            # 计算涓や釜络曡新方鐨勪唬浠?
-            # 浠庝笂新界粫琛?
-            path_top = [
-                {'x': mid_x, 'y': z_min_y, 'type': 'corner'},
-            ]
-            # 浠庝笅新界粫琛?
-            path_bottom = [
-                {'x': mid_x, 'y': z_max_y, 'type': 'corner'},
-            ]
-            
-            # 选择络曡距离鏇寸煭鐨勬式免?
-            dist_via_top = abs(y1 - z_min_y) + abs(z_min_y - y2)
-            dist_via_bottom = abs(y1 - z_max_y) + abs(z_max_y - y2)
-            
-            return path_top if dist_via_top < dist_via_bottom else path_bottom
-        
-        else:
-            # 鍨傜洿连接：优粠作︿晶我栧彸渚х粫琛?
-            mid_y = (y1 + y2) / 2
-            
-            # 浠庡乏渚х粫琛?
-            path_left = [
-                {'x': z_min_x, 'y': mid_y, 'type': 'corner'},
-            ]
-            # 浠庡彸渚х粫琛?
-            path_right = [
-                {'x': z_max_x, 'y': mid_y, 'type': 'corner'},
-            ]
-            
-            # 选择络曡距离鏇寸煭鐨勬式免?
-            dist_via_left = abs(x1 - z_min_x) + abs(z_min_x - x2)
-            dist_via_right = abs(x1 - z_max_x) + abs(z_max_x - x2)
-            
-            return path_left if dist_via_left < dist_via_right else path_right
+        clearance = 25.0
+        candidate_paths = [
+            [
+                {'x': x1, 'y': z_min_y - clearance, 'type': 'corner'},
+                {'x': x2, 'y': z_min_y - clearance, 'type': 'corner'},
+            ],
+            [
+                {'x': x1, 'y': z_max_y + clearance, 'type': 'corner'},
+                {'x': x2, 'y': z_max_y + clearance, 'type': 'corner'},
+            ],
+            [
+                {'x': z_min_x - clearance, 'y': y1, 'type': 'corner'},
+                {'x': z_min_x - clearance, 'y': y2, 'type': 'corner'},
+            ],
+            [
+                {'x': z_max_x + clearance, 'y': y1, 'type': 'corner'},
+                {'x': z_max_x + clearance, 'y': y2, 'type': 'corner'},
+            ],
+        ]
+
+        valid_paths = [
+            path for path in candidate_paths
+            if not self._path_intersects_zones(from_node.position, to_node.position, path, zones)
+        ]
+
+        def path_length(path: list[dict]) -> float:
+            points = [from_node.position] + [Vector2D(p['x'], p['y']) for p in path] + [to_node.position]
+            return sum(points[i].distance_to(points[i + 1]) for i in range(len(points) - 1))
+
+        if valid_paths:
+            return min(valid_paths, key=path_length)
+
+        return min(candidate_paths, key=path_length)
+
+    def _path_intersects_zones(
+        self,
+        from_pos: Vector2D,
+        to_pos: Vector2D,
+        waypoints: list[dict],
+        zones: list | None = None
+    ):
+        """返回折线路径穿越的第一个区域；如果路径安全则返回 None。"""
+        zones = zones if zones is not None else self._get_zones_for_expansion_planning()
+        points = [from_pos] + [Vector2D(float(wp['x']), float(wp['y'])) for wp in waypoints] + [to_pos]
+
+        for start, end in zip(points, points[1:]):
+            for zone in zones:
+                if self._line_intersects_zone(start.x, start.y, end.x, end.y, zone):
+                    return zone
+        return None
     
     def _rule_plan_expansion(
         self, nodes_info: list, min_x: float, max_x: float,
@@ -1492,6 +1504,20 @@ class PopulationCityPlanner(BaseAgent):
 
         return False
 
+    def _road_segment_blocked_by_zone(self, from_node: Node, to_node: Node):
+        """返回候选道路穿越的第一个区域；如果道路安全则返回 None。"""
+        zones = self._get_zones_for_expansion_planning()
+        for zone in zones:
+            if self._line_intersects_zone(
+                from_node.position.x,
+                from_node.position.y,
+                to_node.position.x,
+                to_node.position.y,
+                zone,
+            ):
+                return zone
+        return None
+
     def _safe_add_edge(self, from_node: Node, to_node: Node, num_lanes: int = 2, bidirectional: bool = True):
         """Add edge with geometric overlap guards."""
         if not self.environment:
@@ -1509,6 +1535,10 @@ class PopulationCityPlanner(BaseAgent):
             return None
         if self._would_overlap_existing_roads(from_node, to_node):
             print(f"[城市扩张] 跳过重叠道路: {from_node.node_id} -> {to_node.node_id}")
+            return None
+        blocking_zone = self._road_segment_blocked_by_zone(from_node, to_node)
+        if blocking_zone:
+            print(f"[城市扩张] 跳过穿越区域的道路: {from_node.node_id} -> {to_node.node_id} ({blocking_zone.name})")
             return None
         return self.environment.add_edge_dynamically(
             from_node=from_node,
@@ -1614,21 +1644,22 @@ class PopulationCityPlanner(BaseAgent):
         from city.environment.road_network import TrafficLight
         from city.agents.traffic_light_agent import TrafficLightAgent
         
+        network = self.environment.road_network
         count = 0
-        for node in nodes:
-            # 如果是交叉口（连接数 >= 3）
-            total_connections = len(node.incoming_edges) + len(node.outgoing_edges)
-            if total_connections >= 3 and not node.traffic_light:
+        # 新道路可能让既有节点从普通节点变成丁字/十字路口，因此扫描整个路网。
+        for node in network.nodes.values():
+            if network.needs_traffic_light(node) and not node.traffic_light:
                 node.is_intersection = True
-                node.traffic_light = TrafficLight(
-                    node, cycle_time=60, green_duration=25, yellow_duration=5
+                network.register_traffic_light(
+                    node,
+                    TrafficLight(node, cycle_time=60, green_duration=25, yellow_duration=5),
                 )
                 
                 tl_agent = TrafficLightAgent(
                     control_node=node,
                     environment=self.environment,
                     use_llm=self.use_llm,
-                    name=f"红绿灯_{node.node_id}",
+                    name=f"traffic_light_{node.node_id}",
                     enable_memory=self.use_llm
                 )
                 tl_agent.activate()
@@ -1944,10 +1975,27 @@ class PopulationCityPlanner(BaseAgent):
                                 waypoints.extend(path)
                             break
                 
+                if not waypoints and nid in path_waypoints:
+                    waypoints = path_waypoints[nid]
+
+                blocking_zone = self._path_intersects_zones(
+                    new_node.position,
+                    target_node.position,
+                    waypoints,
+                    zones,
+                )
+                if blocking_zone:
+                    print(f"[城市扩张] 当前路径会穿过区域 {blocking_zone.name}，尝试重新绕行")
+                    detour = self._find_path_around_zones(new_node, target_node, zones)
+                    if detour and not self._path_intersects_zones(new_node.position, target_node.position, detour, zones):
+                        waypoints = detour
+                        print(f"[城市扩张] 已生成避让区域的折线路径，经过 {len(waypoints)} 个中间点")
+                    else:
+                        print(f"[城市扩张] 无法生成不穿越区域的路径，跳过连接 {nid}")
+                        continue
+                
                 # 濡傛灉最夐计算鐨勮矾寰勭偣我栬呭垰计算鐨勭粫琛岃矾寰勶）优跨敤鎶樼嚎
-                if (nid in path_waypoints and path_waypoints[nid]) or waypoints:
-                    if not waypoints and nid in path_waypoints:
-                        waypoints = path_waypoints[nid]
+                if waypoints:
                     
                     print(f"[城市扩张] 使用折线路径连接 {nid}，经过 {len(waypoints)} 个中间点")
                     
@@ -2082,6 +2130,7 @@ class PopulationCityPlanner(BaseAgent):
             
             if connections > 0:
                 self.last_expansion_time = self.environment.current_time
+                self._add_traffic_lights_to_new_nodes([new_node])
                 
                 # 记录扩展展鍘嗗彶
                 expansion_record = {

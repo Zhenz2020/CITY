@@ -81,20 +81,21 @@ class DynamicNetworkManager:
             network.create_edge(near_node, far_node, num_lanes=2, bidirectional=True)
         
         # 在中心添加红绿灯
-        center_node.traffic_light = TrafficLight(
-            center_node, cycle_time=60, green_duration=25, yellow_duration=5
-        )
-        
-        # 添加红绿灯智能体
-        from city.agents.traffic_light_agent import TrafficLightAgent
-        tl_agent = TrafficLightAgent(
-            control_node=center_node,
-            environment=self.env,
-            use_llm=True,
-            name="红绿灯_中心"
-        )
-        tl_agent.activate()
-        self.env.add_agent(tl_agent)
+        if network.needs_traffic_light(center_node):
+            network.register_traffic_light(
+                center_node,
+                TrafficLight(center_node, cycle_time=60, green_duration=25, yellow_duration=5),
+            )
+            # 添加红绿灯智能体
+            from city.agents.traffic_light_agent import TrafficLightAgent
+            tl_agent = TrafficLightAgent(
+                control_node=center_node,
+                environment=self.env,
+                use_llm=True,
+                name="traffic_light_center"
+            )
+            tl_agent.activate()
+            self.env.add_agent(tl_agent)
         
         # 设置为环境路网
         self.env.road_network = network
@@ -168,20 +169,22 @@ class DynamicNetworkManager:
                     network.create_edge(node, target, num_lanes=2, bidirectional=True)
                 
                 # 如果是交叉口，添加红绿灯
-                if len(node.incoming_edges) >= 2 and not node.traffic_light:
-                    node.traffic_light = TrafficLight(
-                        node, cycle_time=60, green_duration=25, yellow_duration=5
-                    )
-                    
-                    from city.agents.traffic_light_agent import TrafficLightAgent
-                    tl_agent = TrafficLightAgent(
-                        control_node=node,
-                        environment=self.env,
-                        use_llm=True,
-                        name=f"红绿灯_{int(x)}_{int(y)}"
-                    )
-                    tl_agent.activate()
-                    self.env.add_agent(tl_agent)
+                for signal_node in (node, target):
+                    if network.needs_traffic_light(signal_node) and not signal_node.traffic_light:
+                        network.register_traffic_light(
+                            signal_node,
+                            TrafficLight(signal_node, cycle_time=60, green_duration=25, yellow_duration=5),
+                        )
+                        
+                        from city.agents.traffic_light_agent import TrafficLightAgent
+                        tl_agent = TrafficLightAgent(
+                            control_node=signal_node,
+                            environment=self.env,
+                            use_llm=True,
+                            name=f"traffic_light_{signal_node.node_id}"
+                        )
+                        tl_agent.activate()
+                        self.env.add_agent(tl_agent)
         
         self.env._setup_network()
         print(f"[DynamicNetwork] 网格扩展完成，新增{len(created_nodes)}个节点")
@@ -225,14 +228,20 @@ class DynamicNetworkManager:
         network.create_edge(mid_node, end_node, num_lanes=2, bidirectional=True)
         
         # 添加红绿灯
-        mid_node.traffic_light = TrafficLight(mid_node, cycle_time=60, green_duration=25, yellow_duration=5)
+        if not network.needs_traffic_light(mid_node):
+            print(f"[DynamicNetwork] 娣诲姞涓棿鑺傜偣: {start_node.name} <-> {end_node.name}")
+            return mid_node
+        network.register_traffic_light(
+            mid_node,
+            TrafficLight(mid_node, cycle_time=60, green_duration=25, yellow_duration=5),
+        )
         
         from city.agents.traffic_light_agent import TrafficLightAgent
         tl_agent = TrafficLightAgent(
             control_node=mid_node,
             environment=self.env,
             use_llm=True,
-            name=f"红绿灯_mid"
+            name=f"traffic_light_{mid_node.node_id}"
         )
         tl_agent.activate()
         self.env.add_agent(tl_agent)
@@ -327,17 +336,18 @@ def create_procedural_initial_network(
     
     # 为所有交叉口添加红绿灯（连接数 >= 3）
     for node in network.nodes.values():
-        total_connections = len(node.incoming_edges) + len(node.outgoing_edges)
-        
-        if total_connections >= 3 and not node.traffic_light:
+        if network.needs_traffic_light(node) and not node.traffic_light:
             node.is_intersection = True
-            node.traffic_light = TrafficLight(node, cycle_time=60, green_duration=25, yellow_duration=5)
+            network.register_traffic_light(
+                node,
+                TrafficLight(node, cycle_time=60, green_duration=25, yellow_duration=5),
+            )
             
             tl_agent = TrafficLightAgent(
                 control_node=node,
                 environment=env,
                 use_llm=True,
-                name=f"红绿灯_{node.name}"
+                name=f"traffic_light_{node.name}"
             )
             tl_agent.activate()
             env.add_agent(tl_agent)

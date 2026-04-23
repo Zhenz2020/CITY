@@ -647,6 +647,62 @@ class ProceduralRoadmapGenerator:
         print(f"[ProceduralRoadmap] 生长完成: 新增 {len(new_vertices)} 个顶点")
         return new_vertices
     
+    def _get_zones_for_road_avoidance(self) -> list:
+        """收集当前环境中的功能区域，用于道路避让。"""
+        zones = []
+        for agent in self.env.agents.values():
+            zone_manager = getattr(agent, "zone_manager", None)
+            if zone_manager and hasattr(zone_manager, "zones"):
+                zones.extend(zone_manager.zones.values())
+        return zones
+
+    def _segment_intersects_zone(self, x1: float, y1: float, x2: float, y2: float, zone) -> bool:
+        """检查线段是否穿越带道路缓冲的区域边界。"""
+        road_buffer = 30.0
+        zone_min_x = zone.center.x - zone.width / 2 - road_buffer
+        zone_max_x = zone.center.x + zone.width / 2 + road_buffer
+        zone_min_y = zone.center.y - zone.height / 2 - road_buffer
+        zone_max_y = zone.center.y + zone.height / 2 + road_buffer
+
+        if (x1 < zone_min_x and x2 < zone_min_x) or (x1 > zone_max_x and x2 > zone_max_x):
+            return False
+        if (y1 < zone_min_y and y2 < zone_min_y) or (y1 > zone_max_y and y2 > zone_max_y):
+            return False
+
+        dx = x2 - x1
+        dy = y2 - y1
+        p = [-dx, dx, -dy, dy]
+        q = [x1 - zone_min_x, zone_max_x - x1, y1 - zone_min_y, zone_max_y - y1]
+        u1 = 0.0
+        u2 = 1.0
+
+        for i in range(4):
+            if p[i] == 0:
+                if q[i] < 0:
+                    return False
+            else:
+                t = q[i] / p[i]
+                if p[i] < 0:
+                    u1 = max(u1, t)
+                else:
+                    u2 = min(u2, t)
+                if u1 > u2:
+                    return False
+        return True
+
+    def _edge_blocked_by_zone(self, from_node, to_node, zones: list):
+        """返回道路候选边穿越的第一个区域；如果安全则返回 None。"""
+        for zone in zones:
+            if self._segment_intersects_zone(
+                from_node.position.x,
+                from_node.position.y,
+                to_node.position.x,
+                to_node.position.y,
+                zone,
+            ):
+                return zone
+        return None
+
     def to_road_network(self) -> None:
         """将 ProceduralVertex 转换为 RoadNetwork。"""
         network = self.env.road_network
@@ -672,6 +728,7 @@ class ProceduralRoadmapGenerator:
         
         # 创建边（基于 neighbours）
         created_edges: set[tuple[str, str]] = set()
+        zones = self._get_zones_for_road_avoidance()
         
         for pv in self.vertex_list:
             from_id = vertex_to_node.get(id(pv))
@@ -694,6 +751,13 @@ class ProceduralRoadmapGenerator:
                 
                 to_node = network.nodes.get(to_id)
                 if to_node and not network.has_edge_between(from_node, to_node):
+                    blocking_zone = self._edge_blocked_by_zone(from_node, to_node, zones)
+                    if blocking_zone:
+                        print(
+                            f"[ProceduralRoadmap] 跳过穿越区域的道路: "
+                            f"{from_id} -> {to_id} ({blocking_zone.name})"
+                        )
+                        continue
                     network.create_edge(from_node, to_node, num_lanes=2, bidirectional=True)
 
 

@@ -124,14 +124,16 @@ def create_demo_simulation(agent_configs: dict | None = None) -> SimulationEnvir
     
     # 3. 在所有交叉口设置红绿灯
     traffic_light_agents = []
-    for i in range(1, GRID_SIZE - 1):
-        for j in range(1, GRID_SIZE - 1):
-            intersection_node = nodes[(i, j)]
-            intersection_node.traffic_light = TrafficLight(
-                intersection_node, 
-                cycle_time=60, 
-                green_duration=25, 
-                yellow_duration=5
+    for intersection_node in network.nodes.values():
+        if network.needs_traffic_light(intersection_node):
+            network.register_traffic_light(
+                intersection_node,
+                TrafficLight(
+                    intersection_node,
+                    cycle_time=60,
+                    green_duration=25,
+                    yellow_duration=5,
+                ),
             )
     
     config = SimulationConfig(time_step=0.2, max_simulation_time=3600.0, real_time_factor=1.0)
@@ -147,20 +149,18 @@ def create_demo_simulation(agent_configs: dict | None = None) -> SimulationEnvir
     env.agent_configs = configs
     
     # 4. 为所有交叉口添加智能红绿灯智能体
-    for i in range(1, GRID_SIZE - 1):
-        for j in range(1, GRID_SIZE - 1):
-            intersection_node = nodes[(i, j)]
-            if intersection_node.is_intersection:
-                traffic_light_agent = TrafficLightAgent(
-                    control_node=intersection_node,
-                    environment=env,
-                    use_llm=configs.get('traffic_light', True) and LLM_AVAILABLE,
-                    enable_memory=bool(configs.get('traffic_light', True)),
-                    name=f"红绿灯_{i}_{j}"
-                )
-                traffic_light_agent.activate()
-                env.add_agent(traffic_light_agent)
-                traffic_light_agents.append(traffic_light_agent)
+    for intersection_node in network.nodes.values():
+        if intersection_node.traffic_light:
+            traffic_light_agent = TrafficLightAgent(
+                control_node=intersection_node,
+                environment=env,
+                use_llm=configs.get('traffic_light', True) and LLM_AVAILABLE,
+                enable_memory=bool(configs.get('traffic_light', True)),
+                name=f"traffic_light_{intersection_node.name}"
+            )
+            traffic_light_agent.activate()
+            env.add_agent(traffic_light_agent)
+            traffic_light_agents.append(traffic_light_agent)
     
     print(f"[网络初始化] {GRID_SIZE}x{GRID_SIZE} 网格, {len(traffic_light_agents)} 个红绿灯")
     
@@ -1146,10 +1146,10 @@ def _build_initial_zones_for_birth(network: RoadNetwork) -> list[tuple[Any, Vect
     zone_h = max(60.0, min(120.0, height * 0.16))
 
     return [
-        (ZoneType.RESIDENTIAL, Vector2D(center_x - dx, center_y - dy), zone_w + 20, zone_h + 10, "阳光小区"),
-        (ZoneType.COMMERCIAL, Vector2D(center_x + dx, center_y - dy), zone_w, zone_h, "中心商业街"),
-        (ZoneType.SCHOOL, Vector2D(center_x - dx, center_y + dy), zone_w + 10, zone_h, "希望小学"),
-        (ZoneType.PARK, Vector2D(center_x + dx, center_y + dy), zone_w + 20, zone_h + 20, "市民公园"),
+        (ZoneType.RESIDENTIAL, Vector2D(center_x - dx, center_y - dy), zone_w + 20, zone_h + 10, "RESIDENTIAL_1"),
+        (ZoneType.COMMERCIAL, Vector2D(center_x + dx, center_y - dy), zone_w, zone_h, "COMMERCIAL_1"),
+        (ZoneType.SCHOOL, Vector2D(center_x - dx, center_y + dy), zone_w + 10, zone_h, "SCHOOL_1"),
+        (ZoneType.PARK, Vector2D(center_x + dx, center_y + dy), zone_w + 20, zone_h + 20, "PARK_1"),
     ]
 
 def create_planning_simulation(agent_configs: dict | None = None) -> SimulationEnvironment:
@@ -1249,10 +1249,10 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
     # 创建初始功能区域（让页面打开时就有内容显示）
     from city.urban_planning.zone import Zone, ZoneType
     initial_zones = [
-        (ZoneType.RESIDENTIAL, Vector2D(150, 150), 100, 80, "阳光小区"),
-        (ZoneType.COMMERCIAL, Vector2D(450, 150), 80, 60, "中心商业街"),
-        (ZoneType.SCHOOL, Vector2D(150, 450), 90, 70, "希望小学"),
-        (ZoneType.PARK, Vector2D(450, 450), 100, 100, "市民公园"),
+        (ZoneType.RESIDENTIAL, Vector2D(150, 150), 100, 80, "RESIDENTIAL_1"),
+        (ZoneType.COMMERCIAL, Vector2D(450, 150), 80, 60, "COMMERCIAL_1"),
+        (ZoneType.SCHOOL, Vector2D(150, 450), 90, 70, "SCHOOL_1"),
+        (ZoneType.PARK, Vector2D(450, 450), 100, 100, "PARK_1"),
     ]
     
     # 城市诞生融合：按初始路网边界动态放置初始功能区
@@ -1309,16 +1309,15 @@ def create_planning_simulation(agent_configs: dict | None = None) -> SimulationE
     traffic_light_use_llm = configs.get('traffic_light', True) and LLM_AVAILABLE
     traffic_light_memory_enabled = bool(configs.get('traffic_light', True))
     for node in network.nodes.values():
-        # 计算节点的总边数（入边 + 出边）
-        total_edges = len(node.incoming_edges) + len(node.outgoing_edges)
-        if total_edges > 2:  # 交叉口
+        # 只有三条及以上物理道路连接的路口才需要信号灯
+        if network.needs_traffic_light(node):
             tl = TrafficLight(node=node, cycle_time=60.0)
-            node.traffic_light = tl
+            network.register_traffic_light(node, tl)
             
             # 添加红绿灯智能体
             tl_agent = TrafficLightAgent(
                 control_node=node,
-                name=f"TL_{node.name}",
+                name=f"traffic_light_{node.name}",
                 environment=env,
                 use_llm=traffic_light_use_llm,
                 enable_memory=traffic_light_memory_enabled
@@ -1792,13 +1791,12 @@ def create_zoning_simulation(agent_configs: dict | None = None) -> SimulationEnv
     
     # 添加红绿灯
     for node in network.nodes.values():
-        total_edges = len(node.incoming_edges) + len(node.outgoing_edges)
-        if total_edges > 2:
+        if network.needs_traffic_light(node):
             tl = TrafficLight(node=node, cycle_time=60.0)
-            node.traffic_light = tl
+            network.register_traffic_light(node, tl)
             tl_agent = TrafficLightAgent(
                 control_node=node,
-                name=f"TL_{node.name}",
+                name=f"traffic_light_{node.name}",
                 environment=env,
                 use_llm=configs.get('traffic_light', True) and LLM_AVAILABLE,
                 enable_memory=bool(configs.get('traffic_light', True))

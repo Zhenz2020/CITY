@@ -31,7 +31,8 @@ def create_test_env():
         network.add_node(n)
     network.create_edge(n1, n2, num_lanes=2)
     network.create_edge(n2, n3, num_lanes=2)
-    n2.traffic_light = TrafficLight(n2)
+    if network.needs_traffic_light(n2):
+        network.register_traffic_light(n2, TrafficLight(n2))
     return SimulationEnvironment(network)
 
 

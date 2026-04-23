@@ -48,9 +48,9 @@ export const CityBirthConfigCard: React.FC<CityBirthConfigCardProps> = ({
       title={
         <Space size={10}>
           <ControlOutlined style={{ color: '#3f95a0' }} />
-          <span>城市诞生参数</span>
+          <span>City Birth Settings</span>
           <Tag color={birthConfig?.city_birth ? 'cyan' : 'default'}>
-            {birthConfig?.city_birth ? '已启用' : '已关闭'}
+            {birthConfig?.city_birth ? 'Enabled' : 'Disabled'}
           </Tag>
         </Space>
       }
@@ -58,9 +58,9 @@ export const CityBirthConfigCard: React.FC<CityBirthConfigCardProps> = ({
       <div style={{ ...fieldCardStyle, marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
           <div>
-            <Typography.Text style={{ color: '#43606a', fontSize: 15 }}>生成器总开关</Typography.Text>
+            <Typography.Text style={{ color: '#43606a', fontSize: 15 }}>Master Switch</Typography.Text>
             <div style={{ color: '#7e99a1', fontSize: 12, marginTop: 4 }}>
-              控制初始城市是否按 City Birth 规则自动生成。
+              Controls whether the initial city is generated automatically with City Birth rules.
             </div>
           </div>
           <Switch
@@ -75,12 +75,12 @@ export const CityBirthConfigCard: React.FC<CityBirthConfigCardProps> = ({
         <div>
           <Space size={8} style={{ marginBottom: 12 }}>
             <DeploymentUnitOutlined style={{ color: '#5ca8b1' }} />
-            <Typography.Text style={{ color: '#4c6a74', fontSize: 13 }}>拓扑生成</Typography.Text>
+            <Typography.Text style={{ color: '#4c6a74', fontSize: 13 }}>Topology</Typography.Text>
           </Space>
           <Row gutter={[12, 12]}>
             <Col span={24}>
               <div style={fieldCardStyle}>
-                <label style={fieldLabelStyle}>路网类型</label>
+                <label style={fieldLabelStyle}>Network Type</label>
                 <Select
                   style={{ width: '100%' }}
                   value={birthConfig?.city_birth_network_type}
@@ -97,7 +97,7 @@ export const CityBirthConfigCard: React.FC<CityBirthConfigCardProps> = ({
             </Col>
             <Col xs={24} sm={12}>
               <div style={fieldCardStyle}>
-                <label style={fieldLabelStyle}>随机种子</label>
+                <label style={fieldLabelStyle}>Random Seed</label>
                 <InputNumber
                   style={{ width: '100%' }}
                   value={birthConfig?.city_birth_seed}
@@ -108,7 +108,7 @@ export const CityBirthConfigCard: React.FC<CityBirthConfigCardProps> = ({
             </Col>
             <Col xs={24} sm={12}>
               <div style={fieldCardStyle}>
-                <label style={fieldLabelStyle}>节点数量</label>
+                <label style={fieldLabelStyle}>Node Count</label>
                 <InputNumber
                   style={{ width: '100%' }}
                   min={4}
@@ -125,12 +125,12 @@ export const CityBirthConfigCard: React.FC<CityBirthConfigCardProps> = ({
         <div>
           <Space size={8} style={{ marginBottom: 12 }}>
             <RadiusSettingOutlined style={{ color: '#58b38b' }} />
-            <Typography.Text style={{ color: '#4c6a74', fontSize: 13 }}>空间尺度</Typography.Text>
+            <Typography.Text style={{ color: '#4c6a74', fontSize: 13 }}>Spatial Scale</Typography.Text>
           </Space>
           <Row gutter={[12, 12]}>
             <Col xs={24} sm={8}>
               <div style={fieldCardStyle}>
-                <label style={fieldLabelStyle}>城市尺度</label>
+                <label style={fieldLabelStyle}>City Scale</label>
                 <InputNumber
                   style={{ width: '100%' }}
                   min={20}
@@ -143,7 +143,7 @@ export const CityBirthConfigCard: React.FC<CityBirthConfigCardProps> = ({
             </Col>
             <Col xs={24} sm={8}>
               <div style={fieldCardStyle}>
-                <label style={fieldLabelStyle}>最小边长</label>
+                <label style={fieldLabelStyle}>Min Edge Length</label>
                 <InputNumber
                   style={{ width: '100%' }}
                   min={10}
@@ -156,7 +156,7 @@ export const CityBirthConfigCard: React.FC<CityBirthConfigCardProps> = ({
             </Col>
             <Col xs={24} sm={8}>
               <div style={fieldCardStyle}>
-                <label style={fieldLabelStyle}>最大边长</label>
+                <label style={fieldLabelStyle}>Max Edge Length</label>
                 <InputNumber
                   style={{ width: '100%' }}
                   min={10}

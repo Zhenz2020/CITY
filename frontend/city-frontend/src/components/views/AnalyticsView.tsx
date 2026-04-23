@@ -17,26 +17,16 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 }) => {
   return (
     <div style={{ padding: 16 }}>
-      <Card title={<><DashboardOutlined /> 统计分析</>}>
+      <Card title={<><DashboardOutlined /> Analytics</>}>
         <Row gutter={16}>
           <Col span={8}>
-            <Statistic 
-              title="仿真时间" 
-              value={currentTime.toFixed(1)} 
-              suffix="s"
-            />
+            <Statistic title="Simulation Time" value={currentTime.toFixed(1)} suffix="s" />
           </Col>
           <Col span={8}>
-            <Statistic 
-              title="活跃车辆" 
-              value={statistics?.active_vehicles || vehicles.length} 
-            />
+            <Statistic title="Active Vehicles" value={statistics?.active_vehicles || vehicles.length} />
           </Col>
           <Col span={8}>
-            <Statistic 
-              title="已完成车辆" 
-              value={statistics?.total_vehicles_completed || 0} 
-            />
+            <Statistic title="Completed Vehicles" value={statistics?.total_vehicles_completed || 0} />
           </Col>
         </Row>
       </Card>

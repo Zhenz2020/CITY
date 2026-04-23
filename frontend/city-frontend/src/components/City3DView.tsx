@@ -386,33 +386,13 @@ const renderTrafficLights = (
   worldToScene: (x: number, y: number) => { x: number; z: number }
 ) => {
   const nodeById = new Map(network.nodes.map(node => [node.id, node]));
-  const physicalNeighborsByNode = new Map<string, Array<{ neighborId: string; axis: 'ns' | 'ew' }>>();
-
-  network.edges.forEach(edge => {
-    const fromNode = nodeById.get(edge.from_node);
-    const toNode = nodeById.get(edge.to_node);
-    if (!fromNode || !toNode) return;
-    const axis: 'ns' | 'ew' = Math.abs(toNode.x - fromNode.x) >= Math.abs(toNode.y - fromNode.y) ? 'ew' : 'ns';
-
-    const fromList = physicalNeighborsByNode.get(edge.from_node) || [];
-    if (!fromList.some(item => item.neighborId === edge.to_node)) {
-      fromList.push({ neighborId: edge.to_node, axis });
-      physicalNeighborsByNode.set(edge.from_node, fromList);
-    }
-
-    const toList = physicalNeighborsByNode.get(edge.to_node) || [];
-    if (!toList.some(item => item.neighborId === edge.from_node)) {
-      toList.push({ neighborId: edge.from_node, axis });
-      physicalNeighborsByNode.set(edge.to_node, toList);
-    }
-  });
 
   trafficLights.forEach(light => {
     const node = nodeById.get(light.node_id);
     if (!node) return;
     const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x374151, roughness: 0.95 });
     const arrowShape = new THREE.ConeGeometry(0.11, 0.3, 10);
-    const neighbors = physicalNeighborsByNode.get(light.node_id) || [];
+    const nodePoint = worldToScene(node.x, node.y);
 
     const addDirectionalSignal = (
       positionX: number,
@@ -449,23 +429,20 @@ const renderTrafficLights = (
       scene.add(arrow);
     };
 
-    neighbors.forEach(({ neighborId, axis }) => {
-      const neighbor = nodeById.get(neighborId);
-      if (!neighbor) return;
-      const nodePoint = worldToScene(node.x, node.y);
-      const neighborPoint = worldToScene(neighbor.x, neighbor.y);
-      const dx = neighborPoint.x - nodePoint.x;
-      const dz = neighborPoint.z - nodePoint.z;
-      const length = Math.hypot(dx, dz);
-      if (length < 0.3) return;
-
-      const positionX = nodePoint.x + dx * 0.5;
-      const positionZ = nodePoint.z + dz * 0.5;
-      const lampColor = getSignalColor(getDirectionalSignalState(light, axis));
-      const yaw = Math.atan2(dz, dx);
-
-      addDirectionalSignal(positionX, positionZ, Math.PI / 2, -yaw + Math.PI / 2, lampColor);
-    });
+    addDirectionalSignal(
+      nodePoint.x - 0.18,
+      nodePoint.z,
+      Math.PI / 2,
+      0,
+      getSignalColor(getDirectionalSignalState(light, 'ns'))
+    );
+    addDirectionalSignal(
+      nodePoint.x + 0.18,
+      nodePoint.z,
+      Math.PI / 2,
+      Math.PI / 2,
+      getSignalColor(getDirectionalSignalState(light, 'ew'))
+    );
   });
 };
 

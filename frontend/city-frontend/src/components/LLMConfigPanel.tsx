@@ -56,32 +56,32 @@ export const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({ config, onChange
       title={
         <Space size={10}>
           <ApiOutlined style={{ color: '#3f95a0' }} />
-          <span>智能体参数</span>
+          <span>Agent Settings</span>
         </Space>
       }
     >
       <Space direction="vertical" style={{ width: '100%' }} size={12}>
         <ConfigRow
-          title="车辆智能体"
-          desc="控制车辆的感知、决策与行动。"
+          title="Vehicle Agent"
+          desc="Controls vehicle perception, decision making, and actions."
           checked={config.vehicle}
           onChange={checked => onChange({ ...config, vehicle: checked })}
         />
         <ConfigRow
-          title="信号灯智能体"
-          desc="控制路口相位和交通节奏。"
+          title="Traffic Light Agent"
+          desc="Controls intersection phases and traffic rhythm."
           checked={config.traffic_light}
           onChange={checked => onChange({ ...config, traffic_light: checked })}
         />
         <ConfigRow
-          title="路网规划智能体"
-          desc="控制道路扩容和网络生长。"
+          title="Road Planning Agent"
+          desc="Controls road expansion and network growth."
           checked={config.road_planning}
           onChange={checked => onChange({ ...config, road_planning: checked })}
         />
         <ConfigRow
-          title="城市分区智能体"
-          desc="控制功能区布局和区域演化。"
+          title="Urban Zoning Agent"
+          desc="Controls district layout and zone evolution."
           checked={config.zoning}
           onChange={checked => onChange({ ...config, zoning: checked })}
         />
@@ -99,7 +99,7 @@ export const LLMConfigPanel: React.FC<LLMConfigPanelProps> = ({ config, onChange
         }}
       >
         <RobotOutlined style={{ marginRight: 8, color: '#58a9b5' }} />
-        这些开关会在启动 City Birth 时直接组合进后端配置。
+        These switches are merged directly into the backend configuration when City Birth starts.
       </div>
     </Card>
   );
